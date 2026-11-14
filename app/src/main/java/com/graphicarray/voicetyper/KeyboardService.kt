@@ -46,6 +46,16 @@ class KeyboardService : InputMethodService() {
     private var lastShiftTap = 0L
     private var passwordField = false
 
+    // Next-word suggestions (all on this device, see Suggest.kt)
+    private lateinit var sugRow: LinearLayout
+    private val sugCells = ArrayList<TextView>()
+    private var sugWords: List<String> = emptyList()
+    private var sugOn = false        // suggestions are shown in this field
+    private var learnOn = false      // and we may learn from it
+    private var selActive = false    // text is selected: no suggestions
+    private var sugSeq = 0
+    private val sugTask = Runnable { runSuggest() }
+
     private lateinit var frame: FrameLayout
     private lateinit var root: LinearLayout
     private lateinit var pvBubble: TextView
@@ -59,7 +69,7 @@ class KeyboardService : InputMethodService() {
     private var clipOpen = false
     private lateinit var rows: LinearLayout
     private lateinit var pill: TextView
-    private lateinit var modeChip: TextView
+    private lateinit var modeKey: Key
     private var micKey: Key? = null
     private var shiftKey: Key? = null
     private class LK(val tv: TextView, val hint: TextView?, val c: Layouts.Cell)
@@ -75,6 +85,7 @@ class KeyboardService : InputMethodService() {
         prefs = Prefs(this)
         bangla = prefs.layout != "en"
         clips = ClipStore(this)
+        Suggest.init(this)
         cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         try { cm?.addPrimaryClipChangedListener(clipListener) } catch (_: Exception) {}
     }
@@ -92,27 +103,28 @@ class KeyboardService : InputMethodService() {
             setPadding(dp(4), dp(4), dp(4), dp(6))
         }
         pill = text("", 12.5f, B.CYAN, true).apply { setPadding(dp(14), dp(6), dp(14), dp(6)) }
-        modeChip = chip("").apply {
-            setPadding(dp(14), dp(7), dp(14), dp(7))
-            setOnClickListener {
-                prefs.mode = if (prefs.mode == "cleanup") "transcribe" else "cleanup"
-                refreshMode()
-            }
+        val mdk = Key(Kind.SPECIAL, null, R.drawable.ic_cleanup, 14f, 1f)
+        bind(mdk) {
+            prefs.mode = if (prefs.mode == "cleanup") "transcribe" else "cleanup"
+            refreshMode()
+            flash(if (prefs.mode == "cleanup") "Clean up" else "Transcribe", B.CYAN)
         }
+        modeKey = mdk
         strip.addView(pill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         val ck = Key(Kind.SPECIAL, null, R.drawable.ic_clip, 14f, 1f)
         bind(ck) { toggleClips() }
         clipKey = ck
         strip.addView(ck.box, LinearLayout.LayoutParams(dp(44), dp(36)).apply { leftMargin = dp(8) })
         strip.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        strip.addView(modeChip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            .apply { rightMargin = dp(8) })
+        strip.addView(mdk.box, LinearLayout.LayoutParams(dp(44), dp(36)).apply { rightMargin = dp(8) })
         val mk = Key(Kind.MIC, null, R.drawable.ic_mic, 14f, 1f)
         bind(mk) { onMic() }
         micKey = mk
         strip.addView(mk.box, LinearLayout.LayoutParams(dp(60), dp(38)))
         rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(strip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        sugRow = buildSugRow()
+        root.addView(sugRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)).apply { setMargins(dp(2), 0, dp(2), dp(3)) })
         root.addView(rows, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         clipPanel = buildClipPanel()
         root.addView(clipPanel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(224)))
@@ -143,6 +155,11 @@ class KeyboardService : InputMethodService() {
                 v == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD)) ||
             (cls == InputType.TYPE_CLASS_NUMBER && v == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
         captureClip(true)
+        // Suggestions: only in plain text fields. Learning: also not when the editor asks for no personalised learning.
+        sugOn = prefs.suggest && !passwordField && !deviceLocked() && suggestionsAllowed(info)
+        learnOn = sugOn && info != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) == 0
+        selActive = info != null && info.initialSelStart != info.initialSelEnd
+        sugWords = emptyList()
         if (!::rows.isInitialized) return
         hideClips()
         hidePreview(null)
@@ -150,6 +167,9 @@ class KeyboardService : InputMethodService() {
         if (page != 0) { page = 0; render() } else applyShift()
         refreshMode()
         refreshPill()
+        clearSug()
+        applySugVisibility()
+        if (sugOn) { Suggest.warm(bangla); scheduleSuggest() }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -157,12 +177,26 @@ class KeyboardService : InputMethodService() {
         cancelRec()
         if (::pvBubble.isInitialized) hidePreview(null)
         if (::clipPanel.isInitialized) hideClips()
+        main.removeCallbacks(sugTask)
+        sugSeq++
+        Suggest.flush()
         super.onFinishInputView(finishingInput)
+    }
+
+    /** The editor moved the cursor or changed the text (also fires after our own commits). */
+    override fun onUpdateSelection(
+        oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int, candidatesStart: Int, candidatesEnd: Int
+    ) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        selActive = newSelStart != newSelEnd
+        if (sugOn) scheduleSuggest()
     }
 
     override fun onDestroy() {
         stopRepeat()
         cancelRec()
+        main.removeCallbacks(sugTask)
+        Suggest.flush()
         main.removeCallbacks(resetPill)
         try { cm?.removePrimaryClipChangedListener(clipListener) } catch (_: Exception) {}
         super.onDestroy()
@@ -368,7 +402,7 @@ class KeyboardService : InputMethodService() {
                 MotionEvent.ACTION_DOWN -> { downX = e.rawX; space.paint(true); true }
                 MotionEvent.ACTION_UP -> {
                     space.paint(false)
-                    if (Math.abs(e.rawX - downX) > dp(48)) switchLayout() else currentInputConnection?.commitText(" ", 1)
+                    if (Math.abs(e.rawX - downX) > dp(48)) switchLayout() else commitRaw(" ")
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> { space.paint(false); true }
@@ -458,9 +492,15 @@ class KeyboardService : InputMethodService() {
         shift = Shift.OFF
         page = 0
         main.post { render(); refreshPill() }
+        // Suggestions follow the layout: Bangla and English keep separate words.
+        clearSug()
+        if (sugOn) { Suggest.warm(bangla); scheduleSuggest() }
     }
 
-    private fun commitRaw(s: String) { currentInputConnection?.commitText(s, 1) }
+    private fun commitRaw(s: String) {
+        currentInputConnection?.commitText(s, 1)
+        afterCommit(s)
+    }
 
     private fun longPress(c: Layouts.Cell) {
         val hnt = c.hintFor(shift != Shift.OFF && !symbols)
@@ -478,6 +518,7 @@ class KeyboardService : InputMethodService() {
 
     private fun commitKey(s: String) {
         if (bangla && !symbols) commitBangla(s) else currentInputConnection?.commitText(s, 1)
+        afterCommit(s)
     }
 
     private fun isConsonant(ch: Char): Boolean =
@@ -504,10 +545,12 @@ class KeyboardService : InputMethodService() {
         val ic = currentInputConnection ?: return
         val sel = ic.getSelectedText(0)
         if (sel != null && sel.isNotEmpty()) ic.commitText("", 1) else sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+        if (sugOn) scheduleSuggest()
     }
 
     private fun enter() {
         val ic = currentInputConnection ?: return
+        learnNow(false)   // the word before Enter counts as finished
         val ei = currentInputEditorInfo
         val act = if (ei != null) (ei.imeOptions and EditorInfo.IME_MASK_ACTION) else EditorInfo.IME_ACTION_NONE
         val plain = ei == null || (ei.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0 ||
@@ -654,6 +697,7 @@ class KeyboardService : InputMethodService() {
         rows.visibility = View.GONE
         clipPanel.visibility = View.VISIBLE
         clipKey.active = true; clipKey.paint(false)
+        applySugVisibility()
     }
 
     private fun hideClips() {
@@ -661,11 +705,142 @@ class KeyboardService : InputMethodService() {
         if (::rows.isInitialized) rows.visibility = View.VISIBLE
         if (::clipPanel.isInitialized) clipPanel.visibility = View.GONE
         if (::clipKey.isInitialized) { clipKey.active = false; clipKey.paint(false) }
+        applySugVisibility()
+        if (sugOn) scheduleSuggest()
     }
 
     private fun insertClip(t: String) {
         currentInputConnection?.commitText(t, 1)
         hideClips()
+        if (sugOn) scheduleSuggest()
+    }
+
+    // ---------- Next-word suggestions ----------
+    /** Plain text fields only. Honors "no suggestions" and skips e-mail, web address, address and name fields. */
+    private fun suggestionsAllowed(info: EditorInfo?): Boolean {
+        if (info == null) return false
+        val t = info.inputType
+        if ((t and InputType.TYPE_MASK_CLASS) != InputType.TYPE_CLASS_TEXT) return false
+        if ((t and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0) return false
+        val v = t and InputType.TYPE_MASK_VARIATION
+        return v != InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS &&
+            v != InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS &&
+            v != InputType.TYPE_TEXT_VARIATION_URI &&
+            v != InputType.TYPE_TEXT_VARIATION_POSTAL_ADDRESS &&
+            v != InputType.TYPE_TEXT_VARIATION_PERSON_NAME
+    }
+
+    /** True before the first unlock after boot, and while the lock screen is showing. No suggestions or learning then. */
+    private fun deviceLocked(): Boolean = try {
+        !getSystemService(android.os.UserManager::class.java).isUserUnlocked ||
+            getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true
+    } catch (_: Exception) { true }
+
+    private fun buildSugRow(): LinearLayout {
+        val r = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = shape(B.PANEL, dp(10).toFloat(), B.EDGE, dp(1))
+            visibility = View.GONE
+        }
+        sugCells.clear()
+        for (i in 0 until 3) {
+            if (i > 0) r.addView(View(this).apply { setBackgroundColor(B.EDGE) }, LinearLayout.LayoutParams(dp(1), dp(20)))
+            val tv = text("", 16f, B.TEXT).apply {
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                includeFontPadding = false
+                setPadding(dp(6), 0, dp(6), 0)
+                setOnTouchListener { v, e ->
+                    if (e.actionMasked == MotionEvent.ACTION_DOWN) {
+                        v.setBackgroundColor(B.EDGE)
+                    } else if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) {
+                        v.background = null
+                    }
+                    false
+                }
+                setOnClickListener {
+                    val w = sugWords.getOrNull(i)
+                    if (!w.isNullOrEmpty()) pickSuggestion(w)
+                }
+            }
+            sugCells.add(tv)
+            r.addView(tv, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+        }
+        return r
+    }
+
+    private fun applySugVisibility() {
+        if (!::sugRow.isInitialized) return
+        sugRow.visibility = if (sugOn && !clipOpen) View.VISIBLE else View.GONE
+    }
+
+    private fun showSug(words: List<String>) {
+        sugWords = words
+        for (i in sugCells.indices) {
+            sugCells[i].text = words.getOrNull(i) ?: ""
+            sugCells[i].typeface = if (i == 0) B.FONT_B else B.FONT
+        }
+    }
+
+    private fun clearSug() {
+        sugSeq++
+        showSug(emptyList())
+    }
+
+    /** Refresh soon. Many calls in a row (fast typing, held backspace) become one refresh. */
+    private fun scheduleSuggest() {
+        if (!sugOn) return
+        main.removeCallbacks(sugTask)
+        main.postDelayed(sugTask, 60)
+    }
+
+    private fun runSuggest() {
+        if (!sugOn || clipOpen || !::sugRow.isInitialized) return
+        val ic = currentInputConnection
+        if (ic == null || selActive) { clearSug(); return }
+        val before = ic.getTextBeforeCursor(Tok.CTX_LEN, 0)?.toString()
+        val after = ic.getTextAfterCursor(1, 0)?.toString() ?: ""
+        val c = if (before == null) null else Tok.context(before, after, bangla)
+        if (c == null) { clearSug(); return }
+        val seq = ++sugSeq
+        Suggest.request(seq, bangla, c) { s, words ->
+            main.post { if (s == sugSeq && sugOn) showSug(words) }
+        }
+    }
+
+    /** Tap on a suggestion: replace the unfinished word and add a space. */
+    private fun pickSuggestion(w: String) {
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(Tok.CTX_LEN, 0)?.toString() ?: ""
+        val partialLen = before.length - Tok.partialStart(before)
+        ic.beginBatchEdit()
+        if (partialLen > 0) ic.deleteSurroundingText(partialLen, 0)
+        ic.commitText("$w ", 1)
+        ic.endBatchEdit()
+        learnNow(true)
+        clearSug()
+        scheduleSuggest()
+    }
+
+    /** Called after a key typed text. A word-ending key (space, comma, ...) means the word before it is finished. */
+    private fun afterCommit(s: String) {
+        if (!sugOn) return
+        if (s.length == 1 && Tok.isBoundary(s[0])) learnNow(true)
+        scheduleSuggest()
+    }
+
+    /**
+     * Learn the finished word from what is really in the field (getTextBeforeCursor), so it matches the
+     * Bangla vowel-sign logic and corrections. Never runs when [learnOn] is false (password, incognito, locked).
+     */
+    private fun learnNow(hasBoundary: Boolean) {
+        if (!learnOn) return
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(Tok.CTX_LEN, 0)?.toString() ?: return
+        val p = Tok.learnTail(before, hasBoundary, bangla) ?: return
+        Suggest.learn(bangla, p.prev, p.word)
     }
 
     // ---------- Voice ----------
@@ -734,6 +909,7 @@ class KeyboardService : InputMethodService() {
         val before = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
         val needSpace = before.isNotEmpty() && !before[0].isWhitespace() && out[0] !in ",.?!;:।)"
         ic.commitText(if (needSpace) " $out" else out, 1)
+        if (sugOn) scheduleSuggest()
     }
 
     private fun cancelRec() {
@@ -773,6 +949,7 @@ class KeyboardService : InputMethodService() {
     // ---------- Status pill ----------
     private fun setPill(t: String, color: Int) {
         pill.text = t
+        pill.visibility = View.VISIBLE
         if (::clipKey.isInitialized) clipKey.box.visibility = if (t.length > 14) View.GONE else View.VISIBLE
         pill.setTextColor(color)
         pill.background = shape(B.PANEL, 1000f, color, dp(1))
@@ -783,7 +960,10 @@ class KeyboardService : InputMethodService() {
         when (vstate) {
             V.REC -> setPill("Listening… tap to stop", B.CYAN)
             V.BUSY -> setPill("Processing…", B.CYAN)
-            V.IDLE -> setPill(if (bangla) "Bangla voice" else "English voice", B.CYAN)
+            V.IDLE -> {
+                pill.visibility = View.GONE
+                if (::clipKey.isInitialized) clipKey.box.visibility = View.VISIBLE
+            }
         }
     }
 
@@ -796,8 +976,8 @@ class KeyboardService : InputMethodService() {
     }
 
     private fun refreshMode() {
-        if (!::modeChip.isInitialized) return
-        modeChip.text = if (prefs.mode == "cleanup") "Clean up" else "Transcribe"
+        if (!::modeKey.isInitialized) return
+        modeKey.setIcon(if (prefs.mode == "cleanup") R.drawable.ic_cleanup else R.drawable.ic_transcribe)
     }
 
     companion object {

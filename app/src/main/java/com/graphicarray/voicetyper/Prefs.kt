@@ -19,6 +19,8 @@ class Prefs(c: Context) {
     var lang: String get() = sp.getString("lang", "en") ?: "en"; set(v) = sp.edit().putString("lang", v).apply()
     /** Keyboard layout: "jatio" or "en" */
     var layout: String get() = sp.getString("layout", "jatio") ?: "jatio"; set(v) = sp.edit().putString("layout", v).apply()
+    /** Next-word suggestions on/off (default on). */
+    var suggest: Boolean get() = sp.getBoolean("suggest", true); set(v) = sp.edit().putBoolean("suggest", v).apply()
     /** Cached model list loaded from the Gemini API */
     var models: List<String>
         get() = (sp.getString("models", "") ?: "").split("\n").filter { it.isNotBlank() }

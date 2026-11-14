@@ -6,6 +6,7 @@ import android.app.Dialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
@@ -20,6 +21,7 @@ import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 
@@ -42,6 +44,7 @@ class MainActivity : Activity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         prefs = Prefs(this); mode = prefs.mode; lang = prefs.lang
+        Suggest.init(this)
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)) }
 
         // Header: linked logo tile, product name, "by Graphicarray" (linked)
@@ -132,6 +135,22 @@ class MainActivity : Activity() {
         kb.addView(helper("Enable Ai Voice Typer Keyboard, then choose it. Switch Jatio and English with the EN / বাং key. The mic follows the layout. On the English layout, long-press X to cut all text, C to copy all, V to paste. The clipboard icon shows your copy history."))
         col.addView(kb, lp(bottom = 12))
 
+        // Suggestions card
+        val sg = card()
+        sg.addView(sectionLabel("Suggestions"))
+        val on = intArrayOf(android.R.attr.state_checked)
+        val sw = Switch(this).apply {
+            isChecked = prefs.suggest
+            thumbTintList = ColorStateList(arrayOf(on, intArrayOf()), intArrayOf(B.CYAN, B.SLATE))
+            trackTintList = ColorStateList(arrayOf(on, intArrayOf()), intArrayOf(B.EDGE, B.ABYSS))
+            setOnCheckedChangeListener { _, checked -> prefs.suggest = checked }
+        }
+        sg.addView(row(text("Suggest next words", 14f, B.TEXT, true), sw))
+        sg.addView(helper("Shows 3 word suggestions above the keys. It learns the words you type, separately for Bangla and English. Everything stays on this phone. It is never sent to Gemini or anywhere else. Nothing is learned in password fields, private (incognito) fields, or while the phone is locked."))
+        sg.addView(secondaryButton("Clear learned words").apply { setOnClickListener { confirmClear() } },
+            lp(bottom = 0).apply { topMargin = dp(14) })
+        col.addView(sg, lp(bottom = 12))
+
         // Try it
         val tryCard = card()
         tryCard.addView(sectionLabel("Try it here"))
@@ -153,7 +172,7 @@ class MainActivity : Activity() {
         val footer = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         footer.addView(text("Graphicarray · Numan Ahmed", 12.5f, B.SLATE).apply { setOnClickListener { openProfile() } },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        footer.addView(chip("v1.2"))
+        footer.addView(chip("v1.6"))
         col.addView(footer)
 
         setContentView(ScrollView(this).apply {
@@ -178,6 +197,28 @@ class MainActivity : Activity() {
             t.setTextColor(if (on) B.ABYSS else B.SLATE)
             t.typeface = if (on) B.FONT_B else B.FONT
         }
+    }
+
+    // ---- Suggestions ----
+    private fun confirmClear() {
+        val d = Dialog(this)
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val box = card()
+        box.addView(sectionLabel("Clear learned words"))
+        box.addView(text("This deletes the words and word pairs the keyboard learned from your typing, in Bangla and English. The built-in starter words stay.", 14f, B.TEXT))
+        val btns = LinearLayout(this).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
+        btns.addView(secondaryButton("Cancel").apply { setOnClickListener { d.dismiss() } })
+        btns.addView(primaryButton("Clear").apply {
+            setOnClickListener {
+                d.dismiss()
+                Suggest.clearAll { Toast.makeText(this@MainActivity, "Learned words cleared", Toast.LENGTH_SHORT).show() }
+            }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+        box.addView(btns, lp(bottom = 0).apply { topMargin = dp(16) })
+        d.setContentView(box)
+        d.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        d.show()
+        d.window?.setLayout((resources.displayMetrics.widthPixels * 0.9).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
     // ---- Gemini models ----
