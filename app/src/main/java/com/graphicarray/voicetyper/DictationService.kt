@@ -142,7 +142,7 @@ class DictationService : AccessibilityService() {
             toast("Add your Gemini key in Ai Voice Typer")
             startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return
         }
-        if (!recorder.start(180) { main.post { if (state == S.REC) stopAndSend() } }) { toast("Mic is busy"); return }
+        if (!recorder.start(180, onLimit = { main.post { if (state == S.REC) stopAndSend() } })) { toast("Mic is busy"); return }
         state = S.REC
         icon?.setImageResource(R.drawable.ic_stop)
         pulse = ObjectAnimator.ofFloat(btn, "scaleX", 1f, 1.12f).apply {
