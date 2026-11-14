@@ -9,18 +9,23 @@ import java.net.URL
 object Gemini {
     private const val BASE = "https://generativelanguage.googleapis.com/v1beta"
 
-    private const val RAW = "Transcribe this audio exactly as spoken. Add normal punctuation. " +
-        "Output only the transcript, nothing else. If there is no speech, output nothing."
-    private const val CLEAN = "Transcribe this audio, then clean it up: remove filler words, false starts and " +
-        "repetitions; fix grammar, spelling and punctuation; keep the speaker's meaning and tone. " +
-        "Output only the final clean text, nothing else. If there is no speech, output nothing."
-    private const val EN = " The speaker is speaking English. Write the output in English."
-    private const val BN = " The speaker is speaking Bangla (Bengali). Write the output in Bengali script (বাংলা). " +
-        "If the speaker says English words, keep those words in English letters. Do not translate."
+    // English mode: the output is ALWAYS English. Bangla speech is translated.
+    private const val EN_RULES = "The speaker may talk in English, Bangla (Bengali), or a mix of both. " +
+        "Your output must ALWAYS be in English only. If the speaker uses Bangla (Bengali) words or sentences, " +
+        "translate them into natural English. Never output Bengali script, and never write Bangla words in " +
+        "English letters (no Banglish, no transliteration). "
+    // Bangla mode: the output is ALWAYS Bangla. Never translated to English.
+    private const val BN_RULES = "The speaker is speaking Bangla (Bengali). Write the output in Bengali script (বাংলা). " +
+        "Never translate it into English. If the speaker says English words, keep those words in English letters. "
+    private const val CLEAN = "Write down what the speaker said, then clean it up: remove filler words, false starts and " +
+        "repetitions; fix grammar, spelling and punctuation; keep the speaker's meaning and tone. "
+    private const val RAW = "Write down everything the speaker said as faithfully as possible, without removing words. Add normal punctuation. "
+    private const val TAIL = "Output only the final text, nothing else. If there is no speech, output nothing."
 
     /** Blocking call. Run off the main thread. Throws Exception with a readable message. */
     fun run(key: String, model: String, mode: String, lang: String, wav: ByteArray): String {
-        val prompt = (if (mode == "cleanup") CLEAN else RAW) + (if (lang == "bn") BN else EN)
+        val prompt = (if (lang == "bn") BN_RULES else EN_RULES) + (if (mode == "cleanup") CLEAN else RAW) + TAIL +
+            (if (lang == "bn") " The final text must be in Bangla." else " The final text must be in English only.")
         val body = JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray()
                 .put(JSONObject().put("text", prompt))

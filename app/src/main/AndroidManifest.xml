@@ -23,6 +23,7 @@
         </service>
         <service
             android:name=".KeyboardService"
+            android:directBootAware="true"
             android:exported="true"
             android:label="@string/kb_name"
             android:permission="android.permission.BIND_INPUT_METHOD">

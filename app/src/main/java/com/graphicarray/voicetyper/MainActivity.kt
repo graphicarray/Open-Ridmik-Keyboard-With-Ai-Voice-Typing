@@ -56,7 +56,7 @@ class MainActivity : Activity() {
         }
         header.addView(logo, LinearLayout.LayoutParams(dp(44), dp(44)))
         val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
-        titles.addView(text("Voice Typer", 20f, B.TEXT, true).apply { letterSpacing = -0.02f })
+        titles.addView(text("Ai Voice Typer", 20f, B.TEXT, true).apply { letterSpacing = -0.02f })
         titles.addView(text("by Graphicarray", 13f, B.CYAN, true).apply { setOnClickListener { openProfile() } })
         header.addView(titles)
         col.addView(header, lp(bottom = 16))
@@ -113,7 +113,7 @@ class MainActivity : Activity() {
         setup.addView(row(svcStatus, secondaryButton("Turn on").apply {
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12) })
-        setup.addView(helper("In Accessibility, open Installed apps, pick Voice Typer and switch it on. Then tap any text field and press the mic."))
+        setup.addView(helper("In Accessibility, open Installed apps, pick Ai Voice Typer and switch it on. Then tap any text field and press the mic."))
         col.addView(setup, lp(bottom = 12))
 
         // Keyboard card
@@ -129,7 +129,7 @@ class MainActivity : Activity() {
                 (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
         }).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12) })
-        kb.addView(helper("Enable Voice Typer Keyboard, then choose it. Switch Jatio and English with the EN / বাং key. The mic follows the layout."))
+        kb.addView(helper("Enable Ai Voice Typer Keyboard, then choose it. Switch Jatio and English with the EN / বাং key. The mic follows the layout. On the English layout, long-press X to cut all text, C to copy all, V to paste. The clipboard icon shows your copy history."))
         col.addView(kb, lp(bottom = 12))
 
         // Try it

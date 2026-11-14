@@ -3,7 +3,14 @@ package com.graphicarray.voicetyper
 import android.content.Context
 
 class Prefs(c: Context) {
-    private val sp = c.getSharedPreferences("ga_prefs", Context.MODE_PRIVATE)
+    // Stored in device-protected storage so the services (marked directBootAware)
+    // can read settings after a reboot, before the user unlocks the phone.
+    private val sp = run {
+        val dp = c.createDeviceProtectedStorageContext()
+        try { dp.moveSharedPreferencesFrom(c, NAME) } catch (_: Exception) { /* locked or nothing to migrate */ }
+        dp.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+    }
+    private companion object { const val NAME = "ga_prefs" }
     var key: String get() = sp.getString("key", "") ?: ""; set(v) = sp.edit().putString("key", v.trim()).apply()
     var model: String get() = sp.getString("model", "gemini-2.5-flash") ?: "gemini-2.5-flash"; set(v) = sp.edit().putString("model", v.trim()).apply()
     /** "cleanup" or "transcribe" */

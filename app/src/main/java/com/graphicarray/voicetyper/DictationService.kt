@@ -135,11 +135,11 @@ class DictationService : AccessibilityService() {
 
     private fun startRec() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            toast("Allow the mic in Voice Typer")
+            toast("Allow the mic in Ai Voice Typer")
             startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return
         }
         if (Prefs(this).key.isBlank()) {
-            toast("Add your Gemini key in Voice Typer")
+            toast("Add your Gemini key in Ai Voice Typer")
             startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return
         }
         if (!recorder.start(180) { main.post { if (state == S.REC) stopAndSend() } }) { toast("Mic is busy"); return }

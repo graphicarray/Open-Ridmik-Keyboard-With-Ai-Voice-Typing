@@ -14,11 +14,15 @@ import android.os.Handler
 import android.os.Looper
 import android.text.InputType
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
+import android.text.TextUtils
+import android.widget.ScrollView
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -42,7 +46,17 @@ class KeyboardService : InputMethodService() {
     private var lastShiftTap = 0L
     private var passwordField = false
 
+    private lateinit var frame: FrameLayout
     private lateinit var root: LinearLayout
+    private lateinit var pvBubble: TextView
+    private var pvOwner: Key? = null
+    private lateinit var clips: ClipStore
+    private var cm: ClipboardManager? = null
+    private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClip(false) }
+    private lateinit var clipKey: Key
+    private lateinit var clipPanel: LinearLayout
+    private lateinit var clipList: LinearLayout
+    private var clipOpen = false
     private lateinit var rows: LinearLayout
     private lateinit var pill: TextView
     private lateinit var modeChip: TextView
@@ -60,6 +74,9 @@ class KeyboardService : InputMethodService() {
         super.onCreate()
         prefs = Prefs(this)
         bangla = prefs.layout != "en"
+        clips = ClipStore(this)
+        cm = getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        try { cm?.addPrimaryClipChangedListener(clipListener) } catch (_: Exception) {}
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false
@@ -83,6 +100,10 @@ class KeyboardService : InputMethodService() {
             }
         }
         strip.addView(pill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val ck = Key(Kind.SPECIAL, null, R.drawable.ic_clip, 14f, 1f)
+        bind(ck) { toggleClips() }
+        clipKey = ck
+        strip.addView(ck.box, LinearLayout.LayoutParams(dp(44), dp(36)).apply { leftMargin = dp(8) })
         strip.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         strip.addView(modeChip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             .apply { rightMargin = dp(8) })
@@ -93,11 +114,23 @@ class KeyboardService : InputMethodService() {
         rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(strip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(rows, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        clipPanel = buildClipPanel()
+        root.addView(clipPanel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(224)))
         render()
         paintMic()
         refreshPill()
         refreshMode()
-        return root
+
+        // Key preview bubble lives in an overlay above the keys.
+        pvBubble = TextView(this).apply {
+            textSize = 30f; setTextColor(B.TEXT); gravity = Gravity.CENTER; includeFontPadding = false
+            typeface = B.FONT; background = shape(B.PANEL, dp(12).toFloat(), B.CYAN, dp(1))
+            elevation = dp(8).toFloat(); visibility = View.GONE
+        }
+        frame = FrameLayout(this)
+        frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        frame.addView(pvBubble, FrameLayout.LayoutParams(dp(52), dp(54), Gravity.TOP or Gravity.START))
+        return frame
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
@@ -109,7 +142,10 @@ class KeyboardService : InputMethodService() {
             (v == InputType.TYPE_TEXT_VARIATION_PASSWORD || v == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
                 v == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD)) ||
             (cls == InputType.TYPE_CLASS_NUMBER && v == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
+        captureClip(true)
         if (!::rows.isInitialized) return
+        hideClips()
+        hidePreview(null)
         shift = Shift.OFF
         if (page != 0) { page = 0; render() } else applyShift()
         refreshMode()
@@ -119,6 +155,8 @@ class KeyboardService : InputMethodService() {
     override fun onFinishInputView(finishingInput: Boolean) {
         stopRepeat()
         cancelRec()
+        if (::pvBubble.isInitialized) hidePreview(null)
+        if (::clipPanel.isInitialized) hideClips()
         super.onFinishInputView(finishingInput)
     }
 
@@ -126,6 +164,7 @@ class KeyboardService : InputMethodService() {
         stopRepeat()
         cancelRec()
         main.removeCallbacks(resetPill)
+        try { cm?.removePrimaryClipChangedListener(clipListener) } catch (_: Exception) {}
         super.onDestroy()
     }
 
@@ -189,32 +228,36 @@ class KeyboardService : InputMethodService() {
      * Without [onLong]: fire [act] on touch-down (fast typing; [repeat] keeps firing while held).
      * With [onLong]: fire [act] on release, or [onLong] if held for 350 ms.
      */
-    private fun bind(k: Key, repeat: Boolean = false, onLong: (() -> Unit)? = null, act: () -> Unit) {
+    private fun bind(k: Key, repeat: Boolean = false, onLong: (() -> Unit)? = null, pv: Boolean = false, act: () -> Unit) {
         var fired = false
         var task: Runnable? = null
         k.box.setOnTouchListener { _, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     k.paint(true)
+                    if (pv) showPreview(k)
                     if (onLong == null) {
                         act()
                         if (repeat) startRepeat(act)
                     } else {
                         fired = false
-                        val t = Runnable { fired = true; onLong() }
+                        val t = Runnable {
+                            fired = true; onLong()
+                            if (pv) k.hintTv?.text?.takeIf { it.isNotEmpty() }?.let { updatePreview(k, it.toString()) }
+                        }
                         task = t
                         main.postDelayed(t, 350)
                     }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    stopRepeat(); k.paint(false)
+                    stopRepeat(); k.paint(false); hidePreview(k)
                     task?.let { main.removeCallbacks(it) }
                     if (onLong != null && !fired) act()
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    stopRepeat(); k.paint(false)
+                    stopRepeat(); k.paint(false); hidePreview(k)
                     task?.let { main.removeCallbacks(it) }
                     true
                 }
@@ -281,7 +324,10 @@ class KeyboardService : InputMethodService() {
             for (c in row) {
                 if (c.n == Layouts.CUR) { line.addView(cursorKey(c).box, cellLp(1f)); continue }
                 val k = Key(Kind.LETTER, c.label(false), 0, sp, 1f, c.h ?: c.sh)
-                if (c.h != null || c.sh != null) bind(k, onLong = { longPress(c) }) { typeCell(c) } else bind(k) { typeCell(c) }
+                val shortcut = !bangla && !symbols && (c.n == "x" || c.n == "c" || c.n == "v")
+                if (shortcut) bind(k, onLong = { shortcutKey(c.n) }, pv = true) { typeCell(c) }
+                else if (c.h != null || c.sh != null) bind(k, onLong = { longPress(c) }, pv = true) { typeCell(c) }
+                else bind(k, pv = true) { typeCell(c) }
                 line.addView(k.box, cellLp(1f))
                 k.tv?.let { letters.add(LK(it, k.hintTv, c)) }
             }
@@ -308,7 +354,7 @@ class KeyboardService : InputMethodService() {
         }
 
         val comma = Key(Kind.SPECIAL, ",", 0, 22f, 1f)
-        bind(comma) { commitKey(",") }
+        bind(comma, pv = true) { commitKey(",") }
         bottom.addView(comma.box, cellLp(1f))
 
         // Space: tap = space, swipe left/right = switch layout
@@ -333,7 +379,7 @@ class KeyboardService : InputMethodService() {
 
         val dot = if (bangla && !symbols) "।" else "."
         val dotK = Key(Kind.SPECIAL, dot, 0, 22f, 1f)
-        bind(dotK) { commitKey(dot) }
+        bind(dotK, pv = true) { commitKey(dot) }
         bottom.addView(dotK.box, cellLp(1f))
 
         val enterK = Key(Kind.SPECIAL, null, R.drawable.ic_enter, 14f, 1.5f)
@@ -469,6 +515,159 @@ class KeyboardService : InputMethodService() {
         if (plain) sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER) else ic.performEditorAction(act)
     }
 
+    // ---------- Key preview bubble ----------
+    private fun showPreview(k: Key) {
+        if (passwordField || !::pvBubble.isInitialized) return
+        val t = k.tv?.text?.toString() ?: return
+        if (t.isBlank()) return
+        pvOwner = k
+        updatePreview(k, t)
+    }
+
+    private fun updatePreview(k: Key, t: String) {
+        if (pvOwner !== k || !::pvBubble.isInitialized || !::frame.isInitialized) return
+        val kl = IntArray(2); k.box.getLocationInWindow(kl)
+        val fl = IntArray(2); frame.getLocationInWindow(fl)
+        val w = k.box.width + dp(16)
+        val h = dp(54)
+        var x = kl[0] - fl[0] + k.box.width / 2 - w / 2
+        x = x.coerceIn(0, maxOf(0, frame.width - w))
+        val y = kl[1] - fl[1] - h + dp(4)
+        pvBubble.layoutParams = (pvBubble.layoutParams as FrameLayout.LayoutParams).also { it.width = w; it.height = h }
+        pvBubble.translationX = x.toFloat()
+        pvBubble.translationY = y.toFloat()
+        pvBubble.text = t
+        pvBubble.visibility = View.VISIBLE
+        pvBubble.bringToFront()
+    }
+
+    /** Hides the bubble if [k] owns it. Pass null to force-hide. */
+    private fun hidePreview(k: Key?) {
+        if (!::pvBubble.isInitialized) return
+        if (k == null || pvOwner === k) { pvOwner = null; pvBubble.visibility = View.GONE }
+    }
+
+    // ---------- Shortcuts (English layout): long-press X = cut all, C = copy all, V = paste ----------
+    private fun allText(ic: InputConnection): String {
+        val before = ic.getTextBeforeCursor(100000, 0) ?: ""
+        val sel = ic.getSelectedText(0) ?: ""
+        val after = ic.getTextAfterCursor(100000, 0) ?: ""
+        return before.toString() + sel.toString() + after.toString()
+    }
+
+    private fun shortcutKey(n: String) {
+        val ic = currentInputConnection ?: return
+        root.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        when (n) {
+            "c", "x" -> {
+                val all = allText(ic)
+                if (all.isEmpty()) { flash("Nothing to " + (if (n == "c") "copy" else "cut"), B.AMBER); return }
+                try { cm?.setPrimaryClip(ClipData.newPlainText("text", all)) } catch (_: Exception) {}
+                if (n == "x") {
+                    ic.beginBatchEdit()
+                    ic.setSelection(0, all.length)
+                    ic.commitText("", 1)
+                    ic.endBatchEdit()
+                }
+                flash(if (n == "c") "Copied" else "Cut", B.GREEN)
+            }
+            "v" -> {
+                val t = try { cm?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString() } catch (_: Exception) { null }
+                if (t.isNullOrEmpty()) { flash("Clipboard empty", B.AMBER); return }
+                ic.commitText(t, 1)
+                flash("Pasted", B.GREEN)
+            }
+        }
+    }
+
+    // ---------- Clipboard history ----------
+    private fun captureClip(onlyIfNew: Boolean) {
+        try {
+            val c = cm?.primaryClip ?: return
+            if (c.itemCount == 0) return
+            val d = c.description
+            if (!d.hasMimeType("text/*")) return
+            if (d.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true) return
+            val t = c.getItemAt(0).coerceToText(this)?.toString() ?: return
+            clips.add(t, onlyIfNew)
+        } catch (_: Exception) {}
+    }
+
+    private fun buildClipPanel(): LinearLayout {
+        val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), 0, dp(4), dp(4)) }
+        head.addView(text("Clipboard", 13f, B.CYAN, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val clear = chip("Clear all").apply {
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            setOnClickListener { clips.clear(); rebuildClipList() }
+        }
+        val close = chip("Close").apply {
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            setOnClickListener { hideClips() }
+        }
+        head.addView(clear, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(8) })
+        head.addView(close, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(4) })
+        p.addView(head, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
+        clipList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val sv = ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(clipList) }
+        p.addView(sv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        return p
+    }
+
+    private fun rebuildClipList() {
+        clipList.removeAllViews()
+        fun msg(t: String) {
+            clipList.addView(text(t, 13f, B.SLATE).apply { gravity = Gravity.CENTER; setPadding(dp(16), dp(32), dp(16), 0) },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        if (!clips.available) { msg("Unlock your phone to see your clipboard"); return }
+        val items = clips.list()
+        if (items.isEmpty()) { msg("Nothing copied yet. Text you copy will show up here."); return }
+        for (t in items) {
+            val row = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                background = shape(B.PANEL, dp(10).toFloat(), B.EDGE, dp(1))
+                setPadding(dp(12), dp(6), 0, dp(6))
+                minimumHeight = dp(44)
+                setOnClickListener { insertClip(t) }
+            }
+            val tv = text(t.replace('\n', ' ').take(300), 14f, B.TEXT).apply {
+                maxLines = 2; ellipsize = TextUtils.TruncateAt.END
+            }
+            row.addView(tv, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val del = text("\u2715", 15f, B.SLATE, true).apply {
+                gravity = Gravity.CENTER; setPadding(dp(16), dp(8), dp(16), dp(8))
+                setOnClickListener { clips.remove(t); rebuildClipList() }
+            }
+            row.addView(del, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            clipList.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { setMargins(dp(4), dp(3), dp(4), dp(3)) })
+        }
+    }
+
+    private fun toggleClips() { if (clipOpen) hideClips() else showClips() }
+
+    private fun showClips() {
+        captureClip(true)
+        rebuildClipList()
+        clipOpen = true
+        rows.visibility = View.GONE
+        clipPanel.visibility = View.VISIBLE
+        clipKey.active = true; clipKey.paint(false)
+    }
+
+    private fun hideClips() {
+        clipOpen = false
+        if (::rows.isInitialized) rows.visibility = View.VISIBLE
+        if (::clipPanel.isInitialized) clipPanel.visibility = View.GONE
+        if (::clipKey.isInitialized) { clipKey.active = false; clipKey.paint(false) }
+    }
+
+    private fun insertClip(t: String) {
+        currentInputConnection?.commitText(t, 1)
+        hideClips()
+    }
+
     // ---------- Voice ----------
     private fun onMic() {
         when (vstate) {
@@ -483,12 +682,15 @@ class KeyboardService : InputMethodService() {
     }
 
     private fun startRec() {
+        if (!getSystemService(android.os.UserManager::class.java).isUserUnlocked) {
+            flash("Unlock your phone to use voice", B.AMBER); return
+        }
         if (passwordField) { flash("Mic is off in password fields", B.AMBER); return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            flash("Allow the mic in Voice Typer", B.AMBER); openApp(); return
+            flash("Allow the mic in Ai Voice Typer", B.AMBER); openApp(); return
         }
         if (prefs.key.isBlank()) {
-            flash("Add your Gemini key in Voice Typer", B.AMBER); openApp(); return
+            flash("Add your Gemini key in Ai Voice Typer", B.AMBER); openApp(); return
         }
         val ok = recorder.start(180) { main.post { if (vstate == V.REC) stopAndSend() } }
         if (!ok) { flash("Mic is busy", B.AMBER); return }
@@ -571,6 +773,7 @@ class KeyboardService : InputMethodService() {
     // ---------- Status pill ----------
     private fun setPill(t: String, color: Int) {
         pill.text = t
+        if (::clipKey.isInitialized) clipKey.box.visibility = if (t.length > 14) View.GONE else View.VISIBLE
         pill.setTextColor(color)
         pill.background = shape(B.PANEL, 1000f, color, dp(1))
     }
