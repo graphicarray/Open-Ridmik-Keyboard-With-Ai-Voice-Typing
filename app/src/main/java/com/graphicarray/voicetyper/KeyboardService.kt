@@ -80,6 +80,10 @@ class KeyboardService : InputMethodService() {
     private lateinit var emojiScroll: ScrollView
     private lateinit var emojiAbc: Key
     private val emojiTabs = ArrayList<TextView>()
+    private lateinit var emojiTabScroll: HorizontalScrollView   // lives in the top strip (inside sugHolder) while emoji mode is on
+    private lateinit var layoutPopup: TextView                  // "English → Jatio" popup after a space swipe
+    private var spaceBox: View? = null
+    private val hideLayoutPopupTask = Runnable { hideLayoutPopup() }
     private var emojiOpen = false
     private var emojiTab = 0    // 0 = Recent, 1.. = Emojis.CATS
     private lateinit var rows: LinearLayout
@@ -150,6 +154,8 @@ class KeyboardService : InputMethodService() {
         sugRow = buildSugRow()
         sugHolder = FrameLayout(this)
         sugHolder.addView(sugRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(32)))
+        emojiTabScroll = buildEmojiTabs()
+        sugHolder.addView(emojiTabScroll, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(32)))
         strip.addView(sugHolder, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(6); rightMargin = dp(6) })
         val mk = Key(Kind.MIC, null, R.drawable.ic_mic, 14f, 1f, iconDp = 18)
         bind(mk) { onMic() }
@@ -173,9 +179,16 @@ class KeyboardService : InputMethodService() {
             typeface = B.FONT; background = shape(B.PANEL, dp(12).toFloat(), B.CYAN, dp(1))
             elevation = dp(8).toFloat(); visibility = View.GONE
         }
+        layoutPopup = TextView(this).apply {
+            textSize = 14f; setTextColor(B.TEXT); gravity = Gravity.CENTER; includeFontPadding = false
+            typeface = B.FONT_B; background = shape(B.PANEL, dp(12).toFloat(), B.CYAN, dp(1))
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            elevation = dp(8).toFloat(); visibility = View.GONE
+        }
         frame = FrameLayout(this)
         frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         frame.addView(pvBubble, FrameLayout.LayoutParams(dp(52), dp(54), Gravity.TOP or Gravity.START))
+        frame.addView(layoutPopup, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START))
         return frame
     }
 
@@ -199,6 +212,7 @@ class KeyboardService : InputMethodService() {
         hideClips()
         hideEmoji()
         hidePreview(null)
+        hideLayoutPopup()
         shift = Shift.OFF
         if (page != 0) { page = 0; render() } else applyShift()
         refreshMode()
@@ -212,6 +226,7 @@ class KeyboardService : InputMethodService() {
         stopRepeat()
         cancelRec()
         if (::pvBubble.isInitialized) hidePreview(null)
+        hideLayoutPopup()
         if (::clipPanel.isInitialized) hideClips()
         if (::emojiPanel.isInitialized) hideEmoji()
         main.removeCallbacks(sugTask)
@@ -434,6 +449,7 @@ class KeyboardService : InputMethodService() {
         val space = Key(Kind.LETTER, "\u25C0\uFE0E    " + (if (bangla) "জাতীয়" else "English") + "    \u25B6\uFE0E", 0, 13f, sw)
         space.fixedColor = B.SLATE
         space.paint(false)
+        spaceBox = space.box
         var downX = 0f
         space.box.setOnTouchListener { _, e ->
             when (e.actionMasked) {
@@ -525,7 +541,10 @@ class KeyboardService : InputMethodService() {
 
     private fun switchLayout() {
         if (vstate != V.IDLE) return
+        val oldName = if (bangla) "Jatio" else "English"
         bangla = !bangla
+        val newName = if (bangla) "Jatio" else "English"
+        showLayoutPopup("$oldName \u2192 $newName")   // before render(): old space key is still laid out here
         prefs.layout = if (bangla) "jatio" else "en"
         shift = Shift.OFF
         page = 0
@@ -627,6 +646,32 @@ class KeyboardService : InputMethodService() {
     private fun hidePreview(k: Key?) {
         if (!::pvBubble.isInitialized) return
         if (k == null || pvOwner === k) { pvOwner = null; pvBubble.visibility = View.GONE }
+    }
+
+    // ---------- Layout switch popup ----------
+    private fun showLayoutPopup(t: String) {
+        if (!::layoutPopup.isInitialized || !::frame.isInitialized) return
+        val sb = spaceBox ?: return
+        main.removeCallbacks(hideLayoutPopupTask)
+        layoutPopup.text = t
+        layoutPopup.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val w = layoutPopup.measuredWidth
+        val h = layoutPopup.measuredHeight
+        val kl = IntArray(2); sb.getLocationInWindow(kl)
+        val fl = IntArray(2); frame.getLocationInWindow(fl)
+        var x = kl[0] - fl[0] + sb.width / 2 - w / 2
+        x = x.coerceIn(0, maxOf(0, frame.width - w))
+        val y = kl[1] - fl[1] - h - dp(6)
+        layoutPopup.translationX = x.toFloat()
+        layoutPopup.translationY = y.toFloat()
+        layoutPopup.visibility = View.VISIBLE
+        layoutPopup.bringToFront()
+        main.postDelayed(hideLayoutPopupTask, 1000)
+    }
+
+    private fun hideLayoutPopup() {
+        main.removeCallbacks(hideLayoutPopupTask)
+        if (::layoutPopup.isInitialized) layoutPopup.visibility = View.GONE
     }
 
     // ---------- Shortcuts (English layout): long-press X = cut all, C = copy all, V = paste ----------
@@ -756,10 +801,13 @@ class KeyboardService : InputMethodService() {
     }
 
     // ---------- Emoji panel ----------
-    private fun buildEmojiPanel(): LinearLayout {
-        val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
-        // Category tabs (scroll sideways)
-        val hs = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+    /** Category tabs. They sit in the top strip while the emoji panel is open (see applySugVisibility). */
+    private fun buildEmojiTabs(): HorizontalScrollView {
+        val hs = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            background = shape(B.PANEL, dp(10).toFloat(), B.EDGE, dp(1))
+            visibility = View.GONE
+        }
         val tabRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(2), 0, dp(2), 0) }
         emojiTabs.clear()
         val names = listOf("Recent") + Emojis.CATS.map { it.name }
@@ -768,18 +816,22 @@ class KeyboardService : InputMethodService() {
             val ok = Emojis.canDraw(icons[i])
             val tv = TextView(this).apply {
                 text = if (ok) icons[i] else names[i]
-                textSize = if (ok) 18f else 12f
+                textSize = if (ok) 17f else 12f
                 setTextColor(B.TEXT)
                 gravity = Gravity.CENTER; includeFontPadding = false
-                setPadding(dp(10), 0, dp(10), 0)
-                minimumWidth = dp(44)
+                setPadding(dp(8), 0, dp(8), 0)
+                minimumWidth = dp(40)
                 setOnClickListener { selectEmojiTab(i) }
             }
             emojiTabs.add(tv)
-            tabRow.addView(tv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(32)).apply { setMargins(dp(2), 0, dp(2), 0) })
+            tabRow.addView(tv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(26)).apply { setMargins(dp(2), 0, dp(2), 0) })
         }
-        hs.addView(tabRow)
-        p.addView(hs, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)))
+        hs.addView(tabRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        return hs
+    }
+
+    private fun buildEmojiPanel(): LinearLayout {
+        val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
         // Grid
         emojiGrid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         emojiScroll = ScrollView(this).apply {
@@ -801,7 +853,7 @@ class KeyboardService : InputMethodService() {
         val bk = Key(Kind.SPECIAL, null, R.drawable.ic_backspace, 14f, 1.5f)
         bind(bk, true) { backspace() }
         bar.addView(bk.box, cellLp(1.5f))
-        p.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)))
+        p.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))   // smaller than letter rows (56dp) so the grid gets room
         return p
     }
 
@@ -824,22 +876,22 @@ class KeyboardService : InputMethodService() {
             }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             return
         }
-        val cols = 8
+        val cols = 9
         var i = 0
         while (i < items.size) {
             val line = newRow()
             for (c in 0 until cols) {
                 val e = items.getOrNull(i + c)
-                if (e == null) { line.addView(View(this), LinearLayout.LayoutParams(0, dp(42), 1f)); continue }
+                if (e == null) { line.addView(View(this), LinearLayout.LayoutParams(0, dp(38), 1f)); continue }
                 val tv = TextView(this).apply {
-                    text = e; textSize = 24f; gravity = Gravity.CENTER; includeFontPadding = false
+                    text = e; textSize = 20f; gravity = Gravity.CENTER; includeFontPadding = false
                     background = android.graphics.drawable.StateListDrawable().apply {
                         addState(intArrayOf(android.R.attr.state_pressed), shape(B.EDGE, dp(8).toFloat()))
                         addState(intArrayOf(), shape(0, dp(8).toFloat()))
                     }
                     setOnClickListener { insertEmoji(e) }
                 }
-                line.addView(tv, LinearLayout.LayoutParams(0, dp(42), 1f))
+                line.addView(tv, LinearLayout.LayoutParams(0, dp(38), 1f))
             }
             emojiGrid.addView(line, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             i += cols
@@ -856,6 +908,7 @@ class KeyboardService : InputMethodService() {
         emojiOpen = true
         emojiAbc.tv?.text = if (bangla) "অকখ" else "ABC"
         selectEmojiTab(if (prefs.recentEmoji.any { Emojis.canDraw(it) }) 0 else 1)
+        emojiTabScroll.post { emojiTabScroll.scrollTo(0, 0) }
         rows.visibility = View.GONE
         emojiPanel.visibility = View.VISIBLE
         emojiKey.active = true; emojiKey.paint(false)
@@ -937,14 +990,16 @@ class KeyboardService : InputMethodService() {
         return r
     }
 
-    /** Decides what the top row shows. Typing: back + suggestions. Otherwise: all icons. Mic is always there. */
+    /** Decides what the top row shows. Typing: back + suggestions. Emoji: category tabs. Otherwise: all icons. Mic is always there. Status pill wins. */
     private fun applySugVisibility() {
-        if (!::sugRow.isInitialized || !::backKey.isInitialized) return
+        if (!::sugRow.isInitialized || !::backKey.isInitialized || !::emojiTabScroll.isInitialized) return
         val status = ::pill.isInitialized && pill.visibility == View.VISIBLE   // status text needs the room
         val typing = typingMode && sugOn && !clipOpen && !emojiOpen
+        val emoji = emojiOpen && !clipOpen
         backKey.box.visibility = if (typing && !status) View.VISIBLE else View.GONE
-        for (k in topKeys) k.box.visibility = if (!typing && !status) View.VISIBLE else View.GONE
+        for (k in topKeys) k.box.visibility = if (!typing && !emoji && !status) View.VISIBLE else View.GONE
         sugRow.visibility = if (typing && !status) View.VISIBLE else View.GONE
+        emojiTabScroll.visibility = if (emoji && !status) View.VISIBLE else View.GONE
     }
 
     private fun showSug(words: List<String>) {
