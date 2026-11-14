@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Voice Typer</string>
+    <string name="service_desc">Shows a mic button next to text fields so you can dictate. The text you speak is sent to Gemini and typed into the field.</string>
+    <string name="kb_name">Voice Typer Keyboard</string>
+</resources>
