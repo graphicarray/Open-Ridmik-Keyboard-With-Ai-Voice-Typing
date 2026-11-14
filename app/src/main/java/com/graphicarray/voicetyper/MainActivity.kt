@@ -29,6 +29,7 @@ class MainActivity : Activity() {
     private lateinit var prefs: Prefs
     private lateinit var keyIn: EditText
     private lateinit var modelBtn: TextView
+    private lateinit var transBtn: TextView
     private lateinit var modelNote: TextView
     private lateinit var tabClean: TextView
     private lateinit var tabRaw: TextView
@@ -81,6 +82,19 @@ class MainActivity : Activity() {
         modeCard.addView(segment(tabClean, tabRaw))
         modeCard.addView(helper("Clean up removes fillers and fixes grammar. Transcribe keeps your exact words."))
         col.addView(modeCard, lp(bottom = 12))
+
+        // Translate card
+        val tr = card()
+        tr.addView(sectionLabel("Translate language"))
+        transBtn = text("", 14f, B.TEXT).apply {
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = shape(B.ABYSS, dp(12).toFloat(), B.EDGE, dp(1))
+            setOnClickListener { pickTransLang() }
+        }
+        tr.addView(transBtn)
+        tr.addView(helper("The translate key on the keyboard turns all text in the field into this language, using Gemini. It needs your Gemini key below."))
+        col.addView(tr, lp(bottom = 12))
+        setTransLabel()
 
         // Gemini card
         val api = card()
@@ -215,6 +229,31 @@ class MainActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
         box.addView(btns, lp(bottom = 0).apply { topMargin = dp(16) })
+        d.setContentView(box)
+        d.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        d.show()
+        d.window?.setLayout((resources.displayMetrics.widthPixels * 0.9).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
+    }
+
+    // ---- Translate language ----
+    private fun setTransLabel() { transBtn.text = prefs.transLang + "   ▾" }
+
+    private fun pickTransLang() {
+        val d = Dialog(this)
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val box = card()
+        box.addView(sectionLabel("Translate into"))
+        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        for (l in Gemini.TRANSLATE_LANGS) {
+            val sel = l == prefs.transLang
+            inner.addView(text(l, 14f, if (sel) B.ABYSS else B.TEXT, sel).apply {
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+                background = if (sel) grad(1000f) else null
+                setOnClickListener { prefs.transLang = l; setTransLabel(); d.dismiss() }
+            }, lp(bottom = 4))
+        }
+        val sv = ScrollView(this).apply { addView(inner) }
+        box.addView(sv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, minOf(Gemini.TRANSLATE_LANGS.size * dp(52), dp(380))))
         d.setContentView(box)
         d.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         d.show()

@@ -48,6 +48,7 @@ class KeyboardService : InputMethodService() {
 
     // Next-word suggestions (all on this device, see Suggest.kt)
     private lateinit var sugRow: LinearLayout
+    private lateinit var sugHolder: FrameLayout
     private val sugCells = ArrayList<TextView>()
     private var sugWords: List<String> = emptyList()
     private var sugOn = false        // suggestions are shown in this field
@@ -64,6 +65,11 @@ class KeyboardService : InputMethodService() {
     private var cm: ClipboardManager? = null
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { captureClip(false) }
     private lateinit var clipKey: Key
+    private lateinit var translateKey: Key
+    private lateinit var backKey: Key
+    private val topKeys = ArrayList<Key>()   // clip, translate, clean up, settings: shown while not typing
+    private var typingMode = false           // true: back key + suggestions. false: all icons
+    private var busyLabel = "Processing…"
     private lateinit var clipPanel: LinearLayout
     private lateinit var clipList: LinearLayout
     private var clipOpen = false
@@ -100,10 +106,10 @@ class KeyboardService : InputMethodService() {
         }
         val strip = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(4), dp(4), dp(6))
+            setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-        pill = text("", 12.5f, B.CYAN, true).apply { setPadding(dp(14), dp(6), dp(14), dp(6)) }
-        val mdk = Key(Kind.SPECIAL, null, R.drawable.ic_cleanup, 14f, 1f)
+        pill = text("", 12f, B.CYAN, true).apply { setPadding(dp(12), dp(5), dp(12), dp(5)) }
+        val mdk = Key(Kind.SPECIAL, null, R.drawable.ic_cleanup, 14f, 1f, iconDp = 18)
         bind(mdk) {
             prefs.mode = if (prefs.mode == "cleanup") "transcribe" else "cleanup"
             refreshMode()
@@ -111,20 +117,34 @@ class KeyboardService : InputMethodService() {
         }
         modeKey = mdk
         strip.addView(pill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        val ck = Key(Kind.SPECIAL, null, R.drawable.ic_clip, 14f, 1f)
+        // Typing mode: [back] [suggestions] [mic]. Icon mode: [clip] [translate] [clean up] [settings] ... [mic]
+        val bkk = Key(Kind.SPECIAL, null, R.drawable.ic_back, 14f, 1f, iconDp = 18)
+        bind(bkk) { typingMode = false; applySugVisibility() }
+        backKey = bkk
+        strip.addView(bkk.box, LinearLayout.LayoutParams(dp(38), dp(32)).apply { leftMargin = dp(6) })
+        val ck = Key(Kind.SPECIAL, null, R.drawable.ic_clip, 14f, 1f, iconDp = 18)
         bind(ck) { toggleClips() }
         clipKey = ck
-        strip.addView(ck.box, LinearLayout.LayoutParams(dp(44), dp(36)).apply { leftMargin = dp(8) })
-        strip.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        strip.addView(mdk.box, LinearLayout.LayoutParams(dp(44), dp(36)).apply { rightMargin = dp(8) })
-        val mk = Key(Kind.MIC, null, R.drawable.ic_mic, 14f, 1f)
+        val tk = Key(Kind.SPECIAL, null, R.drawable.ic_translate, 14f, 1f, iconDp = 18)
+        bind(tk) { onTranslate() }
+        translateKey = tk
+        val gk = Key(Kind.SPECIAL, null, R.drawable.ic_settings, 14f, 1f, iconDp = 18)
+        bind(gk) { openApp() }
+        topKeys.clear()
+        for (k in listOf(ck, tk, mdk, gk)) {
+            topKeys.add(k)
+            strip.addView(k.box, LinearLayout.LayoutParams(dp(38), dp(32)).apply { leftMargin = dp(6) })
+        }
+        sugRow = buildSugRow()
+        sugHolder = FrameLayout(this)
+        sugHolder.addView(sugRow, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(32)))
+        strip.addView(sugHolder, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(6); rightMargin = dp(6) })
+        val mk = Key(Kind.MIC, null, R.drawable.ic_mic, 14f, 1f, iconDp = 18)
         bind(mk) { onMic() }
         micKey = mk
-        strip.addView(mk.box, LinearLayout.LayoutParams(dp(60), dp(38)))
+        strip.addView(mk.box, LinearLayout.LayoutParams(dp(50), dp(32)))
         rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(strip, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        sugRow = buildSugRow()
-        root.addView(sugRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)).apply { setMargins(dp(2), 0, dp(2), dp(3)) })
         root.addView(rows, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         clipPanel = buildClipPanel()
         root.addView(clipPanel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(224)))
@@ -160,6 +180,7 @@ class KeyboardService : InputMethodService() {
         learnOn = sugOn && info != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) == 0
         selActive = info != null && info.initialSelStart != info.initialSelEnd
         sugWords = emptyList()
+        typingMode = false
         if (!::rows.isInitialized) return
         hideClips()
         hidePreview(null)
@@ -221,7 +242,7 @@ class KeyboardService : InputMethodService() {
         }
     }
 
-    private inner class Key(val kind: Kind, label: String?, icon: Int, sp: Float, val weight: Float, hintText: String? = null) {
+    private inner class Key(val kind: Kind, label: String?, icon: Int, sp: Float, val weight: Float, hintText: String? = null, iconDp: Int = 22) {
         val box = FrameLayout(this@KeyboardService)
         val tv: TextView? = if (label != null) this@KeyboardService.text(disp(label), sp, B.TEXT, false).apply {
             gravity = Gravity.CENTER; includeFontPadding = false
@@ -243,7 +264,7 @@ class KeyboardService : InputMethodService() {
             }
             if (img != null) {
                 img.setImageResource(icon)
-                box.addView(img, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
+                box.addView(img, FrameLayout.LayoutParams(dp(iconDp), dp(iconDp), Gravity.CENTER))
             }
             paint(false)
         }
@@ -334,7 +355,7 @@ class KeyboardService : InputMethodService() {
             2 -> Layouts.SYM2
             else -> if (bangla) Layouts.JATIO else Layouts.ENGLISH
         }
-        val sp = if (symbols) 22f else 24f
+        val sp = if (symbols) 19f else 20f
 
         for (ri in 0 until 3) {
             val row = lay.rows[ri]
@@ -387,7 +408,7 @@ class KeyboardService : InputMethodService() {
             bottom.addView(langK.box, cellLp(1f))
         }
 
-        val comma = Key(Kind.SPECIAL, ",", 0, 22f, 1f)
+        val comma = Key(Kind.SPECIAL, ",", 0, 19f, 1f)
         bind(comma, pv = true) { commitKey(",") }
         bottom.addView(comma.box, cellLp(1f))
 
@@ -412,7 +433,7 @@ class KeyboardService : InputMethodService() {
         bottom.addView(space.box, cellLp(sw))
 
         val dot = if (bangla && !symbols) "।" else "."
-        val dotK = Key(Kind.SPECIAL, dot, 0, 22f, 1f)
+        val dotK = Key(Kind.SPECIAL, dot, 0, 19f, 1f)
         bind(dotK, pv = true) { commitKey(dot) }
         bottom.addView(dotK.box, cellLp(1f))
 
@@ -556,6 +577,7 @@ class KeyboardService : InputMethodService() {
         val plain = ei == null || (ei.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION) != 0 ||
             act == EditorInfo.IME_ACTION_NONE || act == EditorInfo.IME_ACTION_UNSPECIFIED
         if (plain) sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER) else ic.performEditorAction(act)
+        if (typingMode) { typingMode = false; applySugVisibility() }
     }
 
     // ---------- Key preview bubble ----------
@@ -745,13 +767,13 @@ class KeyboardService : InputMethodService() {
         }
         sugCells.clear()
         for (i in 0 until 3) {
-            if (i > 0) r.addView(View(this).apply { setBackgroundColor(B.EDGE) }, LinearLayout.LayoutParams(dp(1), dp(20)))
-            val tv = text("", 16f, B.TEXT).apply {
+            if (i > 0) r.addView(View(this).apply { setBackgroundColor(B.EDGE) }, LinearLayout.LayoutParams(dp(1), dp(18)))
+            val tv = text("", 14f, B.TEXT).apply {
                 gravity = Gravity.CENTER
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.END
                 includeFontPadding = false
-                setPadding(dp(6), 0, dp(6), 0)
+                setPadding(dp(4), 0, dp(4), 0)
                 setOnTouchListener { v, e ->
                     if (e.actionMasked == MotionEvent.ACTION_DOWN) {
                         v.setBackgroundColor(B.EDGE)
@@ -771,9 +793,14 @@ class KeyboardService : InputMethodService() {
         return r
     }
 
+    /** Decides what the top row shows. Typing: back + suggestions. Otherwise: all icons. Mic is always there. */
     private fun applySugVisibility() {
-        if (!::sugRow.isInitialized) return
-        sugRow.visibility = if (sugOn && !clipOpen) View.VISIBLE else View.GONE
+        if (!::sugRow.isInitialized || !::backKey.isInitialized) return
+        val status = ::pill.isInitialized && pill.visibility == View.VISIBLE   // status text needs the room
+        val typing = typingMode && sugOn && !clipOpen
+        backKey.box.visibility = if (typing && !status) View.VISIBLE else View.GONE
+        for (k in topKeys) k.box.visibility = if (!typing && !status) View.VISIBLE else View.GONE
+        sugRow.visibility = if (typing && !status) View.VISIBLE else View.GONE
     }
 
     private fun showSug(words: List<String>) {
@@ -827,6 +854,7 @@ class KeyboardService : InputMethodService() {
     /** Called after a key typed text. A word-ending key (space, comma, ...) means the word before it is finished. */
     private fun afterCommit(s: String) {
         if (!sugOn) return
+        if (!typingMode) { typingMode = true; applySugVisibility() }
         if (s.length == 1 && Tok.isBoundary(s[0])) learnNow(true)
         scheduleSuggest()
     }
@@ -841,6 +869,50 @@ class KeyboardService : InputMethodService() {
         val before = ic.getTextBeforeCursor(Tok.CTX_LEN, 0)?.toString() ?: return
         val p = Tok.learnTail(before, hasBoundary, bangla) ?: return
         Suggest.learn(bangla, p.prev, p.word)
+    }
+
+    // ---------- Translate ----------
+    /** Translate ALL text in the field into the language chosen in settings, using Gemini. */
+    private fun onTranslate() {
+        if (vstate != V.IDLE) return
+        if (!getSystemService(android.os.UserManager::class.java).isUserUnlocked) {
+            flash("Unlock your phone to translate", B.AMBER); return
+        }
+        if (passwordField) { flash("Translate is off in password fields", B.AMBER); return }
+        if (prefs.key.isBlank()) {
+            flash("Add your Gemini key in Ai Voice Typer", B.AMBER); openApp(); return
+        }
+        val ic = currentInputConnection ?: return
+        val original = allText(ic)
+        if (original.isBlank()) { flash("Nothing to translate", B.AMBER); return }
+        val key = prefs.key
+        val model = prefs.model
+        val lang = prefs.transLang
+        busyLabel = "Translating…"
+        setV(V.BUSY)
+        Thread {
+            var out = ""
+            var err: String? = null
+            try { out = Gemini.translate(key, model, lang, original) }
+            catch (e: Exception) { err = (e.message ?: "Something went wrong").take(80) }
+            val o = out
+            val er = err
+            main.post { busyLabel = "Processing…"; setV(V.IDLE); finishTranslate(original, o, er) }
+        }.start()
+    }
+
+    private fun finishTranslate(original: String, out: String, err: String?) {
+        if (err != null) { flash(err, B.AMBER); return }
+        if (out.isBlank()) { flash("No translation", B.AMBER); return }
+        val ic = currentInputConnection ?: return
+        // The person kept typing, or moved to another field, while Gemini worked: do not overwrite.
+        if (allText(ic) != original) { flash("Text changed. Try again", B.AMBER); return }
+        ic.beginBatchEdit()
+        ic.setSelection(0, original.length)
+        ic.commitText(out, 1)
+        ic.endBatchEdit()
+        flash("Translated to " + prefs.transLang, B.GREEN)
+        if (sugOn) scheduleSuggest()
     }
 
     // ---------- Voice ----------
@@ -867,7 +939,14 @@ class KeyboardService : InputMethodService() {
         if (prefs.key.isBlank()) {
             flash("Add your Gemini key in Ai Voice Typer", B.AMBER); openApp(); return
         }
-        val ok = recorder.start(180) { main.post { if (vstate == V.REC) stopAndSend() } }
+        val ok = recorder.start(180, { main.post { if (vstate == V.REC) stopAndSend() } }, SILENCE_SEC) { heard ->
+            main.post {
+                if (vstate == V.REC) {
+                    if (heard) stopAndSend()                       // spoke, then went quiet: send it
+                    else { cancelRec(); flash("No speech heard", B.AMBER) }   // never spoke: drop it
+                }
+            }
+        }
         if (!ok) { flash("Mic is busy", B.AMBER); return }
         setV(V.REC)
     }
@@ -950,19 +1029,19 @@ class KeyboardService : InputMethodService() {
     private fun setPill(t: String, color: Int) {
         pill.text = t
         pill.visibility = View.VISIBLE
-        if (::clipKey.isInitialized) clipKey.box.visibility = if (t.length > 14) View.GONE else View.VISIBLE
         pill.setTextColor(color)
         pill.background = shape(B.PANEL, 1000f, color, dp(1))
+        applySugVisibility()
     }
 
     private fun refreshPill() {
         if (!::pill.isInitialized || flashing) return
         when (vstate) {
             V.REC -> setPill("Listening… tap to stop", B.CYAN)
-            V.BUSY -> setPill("Processing…", B.CYAN)
+            V.BUSY -> setPill(busyLabel, B.CYAN)
             V.IDLE -> {
                 pill.visibility = View.GONE
-                if (::clipKey.isInitialized) clipKey.box.visibility = View.VISIBLE
+                applySugVisibility()
             }
         }
     }
@@ -981,6 +1060,8 @@ class KeyboardService : InputMethodService() {
     }
 
     companion object {
+        /** Quiet this long (seconds) = stop mic by itself. Tap still stops it any time. */
+        private const val SILENCE_SEC = 6.5f
         private val INDEP: Map<Char, String> = mapOf(
             'া' to "আ", 'ি' to "ই", 'ী' to "ঈ", 'ু' to "উ",
             'ূ' to "ঊ", 'ৃ' to "ঋ", 'ে' to "এ", 'ৈ' to "ঐ",
