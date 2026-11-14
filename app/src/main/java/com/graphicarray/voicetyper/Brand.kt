@@ -6,6 +6,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.view.Gravity
+import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
 
@@ -46,6 +47,30 @@ fun Context.sectionLabel(t: String) = text(t.uppercase(), 11f, B.SLATE, true).ap
     letterSpacing = 0.16f; setPadding(0, dp(4), 0, dp(8))
 }
 fun Context.helper(t: String) = text(t, 12.5f, B.SLATE).apply { setPadding(0, dp(8), 0, 0) }
+/**
+ * Card title with a small arrow at the right. Tap it to open or close [info], shown right under the title.
+ * Starts closed.
+ */
+fun LinearLayout.addSection(title: String, info: String) {
+    val ctx = context
+    val arrow = ctx.text("▾", 16f, B.SLATE, true).apply {
+        gravity = Gravity.CENTER; setPadding(ctx.dp(14), ctx.dp(2), ctx.dp(4), ctx.dp(6))
+    }
+    val head = LinearLayout(ctx).apply {
+        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        addView(ctx.sectionLabel(title), LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        addView(arrow)
+    }
+    val body = ctx.helper(info).apply { visibility = View.GONE; setPadding(0, 0, 0, ctx.dp(10)) }
+    head.setOnClickListener {
+        val open = body.visibility != View.VISIBLE
+        body.visibility = if (open) View.VISIBLE else View.GONE
+        arrow.text = if (open) "▴" else "▾"
+        arrow.setTextColor(if (open) B.CYAN else B.SLATE)
+    }
+    addView(head, LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
+    addView(body, LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
+}
 fun Context.card() = LinearLayout(this).apply {
     orientation = LinearLayout.VERTICAL
     setPadding(dp(16), dp(16), dp(16), dp(16))

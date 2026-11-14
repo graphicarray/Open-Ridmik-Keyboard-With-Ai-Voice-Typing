@@ -33,18 +33,14 @@ class MainActivity : Activity() {
     private lateinit var modelNote: TextView
     private lateinit var tabClean: TextView
     private lateinit var tabRaw: TextView
-    private lateinit var tabEn: TextView
-    private lateinit var tabBn: TextView
     private lateinit var micStatus: TextView
-    private lateinit var svcStatus: TextView
     private lateinit var kbOnStatus: TextView
     private lateinit var kbPickStatus: TextView
     private var mode = "cleanup"
-    private var lang = "en"
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
-        prefs = Prefs(this); mode = prefs.mode; lang = prefs.lang
+        prefs = Prefs(this); mode = prefs.mode
         Suggest.init(this)
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)) }
 
@@ -65,40 +61,29 @@ class MainActivity : Activity() {
         header.addView(titles)
         col.addView(header, lp(bottom = 16))
 
-        // Language card
-        val langCard = card()
-        langCard.addView(sectionLabel("Language"))
-        tabEn = tab("English") { setLang("en") }
-        tabBn = tab("Bangla") { setLang("bn") }
-        langCard.addView(segment(tabEn, tabBn))
-        langCard.addView(helper("Language for the floating mic. The keyboard mic follows its layout."))
-        col.addView(langCard, lp(bottom = 12))
-
         // Mode card
         val modeCard = card()
-        modeCard.addView(sectionLabel("Voice mode"))
+        modeCard.addSection("Voice mode", "Clean up removes fillers and fixes grammar. Transcribe keeps your exact words.")
         tabClean = tab("Clean up") { setMode("cleanup") }
         tabRaw = tab("Transcribe") { setMode("transcribe") }
         modeCard.addView(segment(tabClean, tabRaw))
-        modeCard.addView(helper("Clean up removes fillers and fixes grammar. Transcribe keeps your exact words."))
         col.addView(modeCard, lp(bottom = 12))
 
         // Translate card
         val tr = card()
-        tr.addView(sectionLabel("Translate language"))
+        tr.addSection("Translate language", "The translate key on the keyboard turns all text in the field into this language, using Gemini. It needs your Gemini key below.")
         transBtn = text("", 14f, B.TEXT).apply {
             setPadding(dp(14), dp(12), dp(14), dp(12))
             background = shape(B.ABYSS, dp(12).toFloat(), B.EDGE, dp(1))
             setOnClickListener { pickTransLang() }
         }
         tr.addView(transBtn)
-        tr.addView(helper("The translate key on the keyboard turns all text in the field into this language, using Gemini. It needs your Gemini key below."))
         col.addView(tr, lp(bottom = 12))
         setTransLabel()
 
         // Gemini card
         val api = card()
-        api.addView(sectionLabel("Gemini API key"))
+        api.addSection("Gemini API key", "Get a free key at aistudio.google.com. It stays on this phone.")
         keyIn = input("Paste key from Google AI Studio", prefs.key).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setOnFocusChangeListener { v, f ->
@@ -107,7 +92,6 @@ class MainActivity : Activity() {
             }
         }
         api.addView(keyIn)
-        api.addView(helper("Get a free key at aistudio.google.com. It stays on this phone."))
         api.addView(sectionLabel("Model").apply { setPadding(0, dp(16), 0, dp(8)) })
         modelBtn = text("", 14f, B.TEXT).apply {
             setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -119,23 +103,18 @@ class MainActivity : Activity() {
         api.addView(row(modelNote, secondaryButton("Load models").apply { setOnClickListener { loadModels() } }))
         col.addView(api, lp(bottom = 12))
 
-        // Setup card
+        // Microphone card
         val setup = card()
-        setup.addView(sectionLabel("Setup"))
+        setup.addSection("Microphone", "The keyboard mic needs this. Tap the mic key on the keyboard to speak.")
         micStatus = text("", 14f, B.TEXT, true)
         setup.addView(row(micStatus, secondaryButton("Allow mic").apply {
             setOnClickListener { requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1) }
         }))
-        svcStatus = text("", 14f, B.TEXT, true)
-        setup.addView(row(svcStatus, secondaryButton("Turn on").apply {
-            setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-        }).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12) })
-        setup.addView(helper("In Accessibility, open Installed apps, pick Ai Voice Typer and switch it on. Then tap any text field and press the mic."))
         col.addView(setup, lp(bottom = 12))
 
         // Keyboard card
         val kb = card()
-        kb.addView(sectionLabel("Keyboard"))
+        kb.addSection("Keyboard", "Enable Ai Voice Typer Keyboard, then choose it. To switch Jatio and English, swipe the space key left or right. The mic follows the layout. The smiley key (top row, or next to ?123) opens emojis: pick a tab, tap an emoji, tap ABC to go back. The translate icon turns all text in the field into your chosen language. The gear opens this screen. The clipboard icon shows your copy history. On the English layout, long-press X to cut all text, C to copy all, V to paste.")
         kbOnStatus = text("", 14f, B.TEXT, true)
         kb.addView(row(kbOnStatus, secondaryButton("Enable").apply {
             setOnClickListener { startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) }
@@ -146,12 +125,11 @@ class MainActivity : Activity() {
                 (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
             }
         }).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12) })
-        kb.addView(helper("Enable Ai Voice Typer Keyboard, then choose it. Switch Jatio and English with the EN / বাং key. The mic follows the layout. On the English layout, long-press X to cut all text, C to copy all, V to paste. The clipboard icon shows your copy history."))
         col.addView(kb, lp(bottom = 12))
 
         // Suggestions card
         val sg = card()
-        sg.addView(sectionLabel("Suggestions"))
+        sg.addSection("Suggestions", "Shows 3 word suggestions above the keys. It learns the words you type, separately for Bangla and English. Everything stays on this phone. It is never sent to Gemini or anywhere else. Nothing is learned in password fields, private (incognito) fields, or while the phone is locked.")
         val on = intArrayOf(android.R.attr.state_checked)
         val sw = Switch(this).apply {
             isChecked = prefs.suggest
@@ -160,7 +138,6 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, checked -> prefs.suggest = checked }
         }
         sg.addView(row(text("Suggest next words", 14f, B.TEXT, true), sw))
-        sg.addView(helper("Shows 3 word suggestions above the keys. It learns the words you type, separately for Bangla and English. Everything stays on this phone. It is never sent to Gemini or anywhere else. Nothing is learned in password fields, private (incognito) fields, or while the phone is locked."))
         sg.addView(secondaryButton("Clear learned words").apply { setOnClickListener { confirmClear() } },
             lp(bottom = 0).apply { topMargin = dp(14) })
         col.addView(sg, lp(bottom = 12))
@@ -174,7 +151,7 @@ class MainActivity : Activity() {
         // Single primary button
         val save = primaryButton("Save").apply {
             setOnClickListener {
-                prefs.key = keyIn.text.toString(); prefs.mode = mode; prefs.lang = lang
+                prefs.key = keyIn.text.toString(); prefs.mode = mode
                 Toast.makeText(this@MainActivity, "Saved", Toast.LENGTH_SHORT).show()
                 maybeLoadModels()
             }
@@ -198,15 +175,13 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume(); refreshStatus()
         mode = prefs.mode   // may be changed from the keyboard
-        lang = prefs.lang; paintTabs()   // language may be changed from the mic button
+        paintTabs()
     }
     override fun onRequestPermissionsResult(c: Int, p: Array<out String>, r: IntArray) { refreshStatus() }
 
     private fun setMode(m: String) { mode = m; prefs.mode = m; paintTabs() }
-    private fun setLang(l: String) { lang = l; prefs.lang = l; paintTabs() }
     private fun paintTabs() {
-        for ((t, on) in listOf(tabClean to (mode == "cleanup"), tabRaw to (mode == "transcribe"),
-            tabEn to (lang == "en"), tabBn to (lang == "bn"))) {
+        for ((t, on) in listOf(tabClean to (mode == "cleanup"), tabRaw to (mode == "transcribe"))) {
             t.background = if (on) grad(1000f) else null
             t.setTextColor(if (on) B.ABYSS else B.SLATE)
             t.typeface = if (on) B.FONT_B else B.FONT
@@ -317,9 +292,7 @@ class MainActivity : Activity() {
 
     private fun refreshStatus() {
         val mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        val enabled = (Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: "")
-            .contains("$packageName/")
-        mark(micStatus, "Microphone", mic); mark(svcStatus, "Mic button", enabled)
+        mark(micStatus, "Microphone", mic)
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         val kbOn = imm.enabledInputMethodList.any { it.packageName == packageName }
         val kbSel = (Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD) ?: "")
