@@ -15,7 +15,7 @@
 - Code: `Suggest.kt` (background thread, lock checks), `WordModel.kt` (counts + file), `Tok.kt` (reads the text before the cursor), `Starter.kt` (built-in word lists).
 - `tools/SuggestCheck.kt` = plain-JVM checks for Tok / WordModel / Starter (not part of the Gradle build).
 
-## Emoji (v2.4)
+## Emoji (v1.5)
 - Two smiley keys open the emoji panel: one in the top icon row, one in the bottom row (letter page, where the EN / বাং key used to be).
 - Language switch is now only the swipe on the space key.
 - Panel: scrollable category tabs (Recent, Smileys, People, Animals, Food, Activity, Travel, Objects, Symbols, Flags), a scrollable grid, and a bottom bar with ABC, space and backspace (hold to repeat).
