@@ -36,17 +36,33 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 
+      # Version comes from app/build.gradle.kts (versionName). Bump it, push to main, and a release appears.
+      - name: Read version
+        id: ver
+        run: |
+          NAME=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          CODE=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+
       - name: Name the APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk GraphicarrayVoiceTyper.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk "GraphicarrayVoiceTyper-v${{ steps.ver.outputs.name }}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: GraphicarrayVoiceTyper-apk
-          path: GraphicarrayVoiceTyper.apk
+          path: GraphicarrayVoiceTyper-v${{ steps.ver.outputs.name }}.apk
 
-      # Tag a version (e.g. v1.0) to publish the APK as a GitHub Release
+      # Every push to main (and every v* tag) publishes a release named after the build version.
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          files: GraphicarrayVoiceTyper.apk
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', steps.ver.outputs.name) }}
+          name: Ai Voice Typer v${{ steps.ver.outputs.name }}
+          body: |
+            Version ${{ steps.ver.outputs.name }} (build ${{ steps.ver.outputs.code }})
+            Commit: ${{ github.sha }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: GraphicarrayVoiceTyper-v${{ steps.ver.outputs.name }}.apk
