@@ -21,6 +21,14 @@ class Prefs(c: Context) {
     var transLang: String get() = sp.getString("transLang", "English") ?: "English"; set(v) = sp.edit().putString("transLang", v).apply()
     /** Next-word suggestions on/off (default on). */
     var suggest: Boolean get() = sp.getBoolean("suggest", true); set(v) = sp.edit().putBoolean("suggest", v).apply()
+    /** Preferences popup: capitalize the first word of each sentence (English layout). */
+    var autoCap: Boolean get() = sp.getBoolean("autoCap", true); set(v) = sp.edit().putBoolean("autoCap", v).apply()
+    /** Preferences popup: extra row of digits above the letters. */
+    var numberRow: Boolean get() = sp.getBoolean("numberRow", false); set(v) = sp.edit().putBoolean("numberRow", v).apply()
+    /** Preferences popup: allow the keyboard height setting. */
+    var resize: Boolean get() = sp.getBoolean("resize", true); set(v) = sp.edit().putBoolean("resize", v).apply()
+    /** Keyboard height in portrait, percent (70..130, step 5). */
+    var kbHeight: Int get() = sp.getInt("kbHeight", 100).coerceIn(70, 130); set(v) = sp.edit().putInt("kbHeight", v.coerceIn(70, 130)).apply()
     /** Recently used emojis, newest first (emoji panel). */
     var recentEmoji: List<String>
         get() = (sp.getString("recentEmoji", "") ?: "").split("\n").filter { it.isNotEmpty() }

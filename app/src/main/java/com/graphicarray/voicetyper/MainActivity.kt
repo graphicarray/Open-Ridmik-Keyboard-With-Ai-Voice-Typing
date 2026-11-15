@@ -21,6 +21,7 @@ import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -127,6 +128,18 @@ class MainActivity : Activity() {
         }).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = dp(12) })
         col.addView(kb, lp(bottom = 12))
 
+        // Preferences card: tap to open the popup
+        val pf = card()
+        val pfHead = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val pfTxt = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        pfTxt.addView(sectionLabel("Preferences").apply { setPadding(0, 0, 0, dp(2)) })
+        pfTxt.addView(text("Auto-capitalization, number row, keyboard height", 12.5f, B.SLATE))
+        pfHead.addView(pfTxt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        pfHead.addView(text("›", 24f, B.CYAN, true).apply { setPadding(dp(12), 0, dp(4), 0) })
+        pf.addView(pfHead)
+        pf.setOnClickListener { showPrefs() }
+        col.addView(pf, lp(bottom = 12))
+
         // Suggestions card
         val sg = card()
         sg.addSection("Suggestions", "Shows 3 word suggestions above the keys. It learns the words you type, separately for Bangla and English. Everything stays on this phone. It is never sent to Gemini or anywhere else. Nothing is learned in password fields, private (incognito) fields, or while the phone is locked.")
@@ -163,7 +176,7 @@ class MainActivity : Activity() {
         val footer = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         footer.addView(text("Graphicarray · Numan Ahmed", 12.5f, B.SLATE).apply { setOnClickListener { openProfile() } },
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        footer.addView(chip("v1.6"))
+        footer.addView(chip("v" + (try { packageManager.getPackageInfo(packageName, 0).versionName } catch (_: Exception) { "" })))
         col.addView(footer)
 
         setContentView(ScrollView(this).apply {
@@ -186,6 +199,85 @@ class MainActivity : Activity() {
             t.setTextColor(if (on) B.ABYSS else B.SLATE)
             t.typeface = if (on) B.FONT_B else B.FONT
         }
+    }
+
+    // ---- Preferences popup ----
+    private fun showPrefs() {
+        val d = Dialog(this)
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val box = card()
+        box.addView(sectionLabel("Preferences"))
+        val on = intArrayOf(android.R.attr.state_checked)
+        fun sw(checked: Boolean, change: (Boolean) -> Unit) = Switch(this).apply {
+            isChecked = checked
+            thumbTintList = ColorStateList(arrayOf(on, intArrayOf()), intArrayOf(B.CYAN, B.SLATE))
+            trackTintList = ColorStateList(arrayOf(on, intArrayOf()), intArrayOf(B.EDGE, B.ABYSS))
+            setOnCheckedChangeListener { _, c -> change(c) }
+        }
+        fun opt(title: String, sub: String, right: View?): LinearLayout {
+            val r = LinearLayout(this)
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.setPadding(0, dp(10), 0, dp(10))
+            val t = LinearLayout(this)
+            t.orientation = LinearLayout.VERTICAL
+            t.addView(text(title, 15f, B.TEXT, true))
+            t.addView(text(sub, 12.5f, B.SLATE))
+            r.addView(t, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (right != null) r.addView(right)
+            return r
+        }
+        fun divider() = View(this).apply { setBackgroundColor(B.EDGE) }
+        val inner = LinearLayout(this)
+        inner.orientation = LinearLayout.VERTICAL
+        val full = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+
+        inner.addView(opt("Auto-capitalization", "Capitalize the first word of each sentence (English layout)",
+            sw(prefs.autoCap) { prefs.autoCap = it }), full)
+        inner.addView(divider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+        inner.addView(opt("Enable number row", "Adds an extra row of digits",
+            sw(prefs.numberRow) { prefs.numberRow = it }), full)
+        inner.addView(divider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+
+        // Height block (dimmed while resizing is off)
+        val heightBox = LinearLayout(this)
+        heightBox.orientation = LinearLayout.VERTICAL
+        val hv = text("", 13f, B.CYAN, true)
+        val seek = SeekBar(this)
+        seek.max = 12   // 70% .. 130%, step 5
+        seek.progress = (prefs.kbHeight - 70) / 5
+        seek.progressTintList = ColorStateList.valueOf(B.CYAN)
+        seek.thumbTintList = ColorStateList.valueOf(B.CYAN)
+        seek.progressBackgroundTintList = ColorStateList.valueOf(B.EDGE)
+        hv.text = "${70 + 5 * seek.progress}%"
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                hv.text = "${70 + 5 * p}%"
+                if (fromUser) prefs.kbHeight = 70 + 5 * p
+            }
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) {}
+        })
+        fun dim(enabled: Boolean) { seek.isEnabled = enabled; heightBox.alpha = if (enabled) 1f else 0.4f }
+        inner.addView(opt("Enable keyboard resizing", "Lets you change the keyboard height",
+            sw(prefs.resize) { prefs.resize = it; dim(it) }), full)
+        inner.addView(divider(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
+        val hh = LinearLayout(this)
+        hh.gravity = Gravity.CENTER_VERTICAL
+        hh.addView(text("Keyboard Height (Portrait)", 15f, B.TEXT, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        hh.addView(hv)
+        heightBox.addView(hh, full)
+        heightBox.addView(seek, full)
+        heightBox.setPadding(0, dp(10), 0, dp(4))
+        inner.addView(heightBox, full)
+        dim(prefs.resize)
+
+        box.addView(ScrollView(this).apply { addView(inner) }, full)
+        box.addView(secondaryButton("Done").apply { setOnClickListener { d.dismiss() } },
+            lp(bottom = 0).apply { topMargin = dp(12) })
+        d.setContentView(box)
+        d.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        d.show()
+        d.window?.setLayout((resources.displayMetrics.widthPixels * 0.9).toInt(), ViewGroup.LayoutParams.WRAP_CONTENT)
     }
 
     // ---- Suggestions ----

@@ -83,6 +83,8 @@ class KeyboardService : InputMethodService() {
     private lateinit var emojiTabScroll: HorizontalScrollView   // lives in the top strip (inside sugHolder) while emoji mode is on
     private lateinit var layoutPopup: TextView                  // "English → Jatio" popup after a space swipe
     private var spaceBox: View? = null
+    private var autoShifted = false     // shift was set by auto-capitalization, not by the user
+    private var renderSig = ""          // preferences the current key rows were built with
     private val hideLayoutPopupTask = Runnable { hideLayoutPopup() }
     private var emojiOpen = false
     private var emojiTab = 0    // 0 = Recent, 1.. = Emojis.CATS
@@ -214,11 +216,13 @@ class KeyboardService : InputMethodService() {
         hidePreview(null)
         hideLayoutPopup()
         shift = Shift.OFF
-        if (page != 0) { page = 0; render() } else applyShift()
+        autoShifted = false
+        if (page != 0) { page = 0; render() } else if (renderSig != sigNow()) render() else applyShift()
         refreshMode()
         refreshPill()
         clearSug()
         applySugVisibility()
+        updateAutoCap()
         if (sugOn) { Suggest.warm(bangla); scheduleSuggest() }
     }
 
@@ -241,6 +245,7 @@ class KeyboardService : InputMethodService() {
     ) {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
         selActive = newSelStart != newSelEnd
+        updateAutoCap()
         if (sugOn) scheduleSuggest()
     }
 
@@ -373,8 +378,17 @@ class KeyboardService : InputMethodService() {
     private fun newRow(): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
 
     private fun addRow(line: LinearLayout) {
-        rows.addView(line, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)))
+        rows.addView(line, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, rowH()))
     }
+
+    /** Key height in percent. Preferences: resizing on, portrait only. */
+    private fun heightPct(): Int {
+        if (!prefs.resize) return 100
+        if (resources.configuration.orientation != android.content.res.Configuration.ORIENTATION_PORTRAIT) return 100
+        return prefs.kbHeight
+    }
+    private fun rowH(): Int = dp(56) * heightPct() / 100
+    private fun sigNow(): String = "${prefs.numberRow}|${heightPct()}"
 
     private fun render() {
         stopRepeat()
@@ -387,6 +401,21 @@ class KeyboardService : InputMethodService() {
             else -> if (bangla) Layouts.JATIO else Layouts.ENGLISH
         }
         val sp = if (symbols) 19f else 20f
+
+        // Preferences: number row (letter pages only). Bangla digits on Jatio, long-press = Latin digit.
+        var rowCount = 4
+        if (prefs.numberRow && !symbols) {
+            rowCount = 5
+            val nl = newRow()
+            for (c in (if (bangla) Layouts.SYM1_BN else Layouts.SYM1_EN).rows[0]) {
+                val k = Key(Kind.LETTER, c.label(false), 0, sp, 1f, c.h ?: c.sh)
+                if (c.h != null || c.sh != null) bind(k, onLong = { longPress(c) }, pv = true) { typeCell(c) }
+                else bind(k, pv = true) { typeCell(c) }
+                nl.addView(k.box, cellLp(1f))
+                k.tv?.let { letters.add(LK(it, k.hintTv, c)) }
+            }
+            addRow(nl)
+        }
 
         for (ri in 0 until 3) {
             val row = lay.rows[ri]
@@ -475,6 +504,11 @@ class KeyboardService : InputMethodService() {
         bottom.addView(enterK.box, cellLp(1.5f))
         addRow(bottom)
 
+        // Clip and emoji panels have the height of the key rows, so the keyboard never jumps.
+        val total = rowCount * rowH()
+        if (::clipPanel.isInitialized) clipPanel.layoutParams = clipPanel.layoutParams.also { it.height = total }
+        if (::emojiPanel.isInitialized) emojiPanel.layoutParams = emojiPanel.layoutParams.also { it.height = total }
+        renderSig = sigNow()
         applyShift()
     }
 
@@ -536,7 +570,24 @@ class KeyboardService : InputMethodService() {
             else -> Shift.ONCE
         }
         lastShiftTap = now
+        autoShifted = false
         applyShift()
+    }
+
+    /** Preferences: auto-capitalization. English layout only. Sets shift for the first letter of a sentence. */
+    private fun updateAutoCap() {
+        if (!::rows.isInitialized) return
+        val ei = currentInputEditorInfo
+        val textField = ei != null && (ei.inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT
+        val ic = currentInputConnection
+        val allowed = prefs.autoCap && !bangla && !symbols && !passwordField && textField && shift != Shift.LOCK
+        val need = allowed && ic != null && ic.getCursorCapsMode(TextUtils.CAP_MODE_SENTENCES) != 0
+        if (need && shift == Shift.OFF) {
+            shift = Shift.ONCE; autoShifted = true; applyShift()
+        } else if (!need && autoShifted && shift == Shift.ONCE) {
+            shift = Shift.OFF; autoShifted = false; applyShift()
+        }
+        if (shift != Shift.ONCE) autoShifted = false
     }
 
     private fun switchLayout() {
@@ -547,14 +598,25 @@ class KeyboardService : InputMethodService() {
         showLayoutPopup("$oldName \u2192 $newName")   // before render(): old space key is still laid out here
         prefs.layout = if (bangla) "jatio" else "en"
         shift = Shift.OFF
+        autoShifted = false
         page = 0
-        main.post { render(); refreshPill() }
+        main.post { render(); refreshPill(); updateAutoCap() }
         // Suggestions follow the layout: Bangla and English keep separate words.
         clearSug()
         if (sugOn) { Suggest.warm(bangla); scheduleSuggest() }
     }
 
+    /** , . ? ! । stick to the word before them: remove one space that sits right after a word. */
+    private fun snapPunct(s: String) {
+        if (s.length != 1 || s[0] !in ",.?!।" || passwordField) return
+        val ic = currentInputConnection ?: return
+        if (ic.getSelectedText(0)?.isNotEmpty() == true) return
+        val b = ic.getTextBeforeCursor(2, 0)?.toString() ?: return
+        if (b.length == 2 && b[1] == ' ' && !b[0].isWhitespace() && b[0] !in ",.?!।") ic.deleteSurroundingText(1, 0)
+    }
+
     private fun commitRaw(s: String) {
+        snapPunct(s)
         currentInputConnection?.commitText(s, 1)
         afterCommit(s)
     }
@@ -574,6 +636,7 @@ class KeyboardService : InputMethodService() {
     }
 
     private fun commitKey(s: String) {
+        snapPunct(s)
         if (bangla && !symbols) commitBangla(s) else currentInputConnection?.commitText(s, 1)
         afterCommit(s)
     }
