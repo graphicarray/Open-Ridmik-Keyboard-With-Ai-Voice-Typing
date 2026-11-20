@@ -10,7 +10,10 @@ import java.io.File
  * Score = learned count * 8 + starter strength (1..7), so words you really use beat the starter list.
  * Learned words/pairs show only after they were seen [MIN_SHOW] times (filters one-off typos).
  */
-class WordModel(private val bn: Boolean) {
+class WordModel(private val bn: Boolean, private val starter: Boolean = true) {
+    private fun sUni(): Map<String, Int> = if (starter) Starter.uni(bn) else emptyMap()
+    private fun sBi(): Map<String, Int> = if (starter) Starter.bi(bn) else emptyMap()
+
     var loaded = false
         private set
     private var dirty = false
@@ -55,15 +58,18 @@ class WordModel(private val bn: Boolean) {
     }
 
     // ---------- Suggestions ----------
-    private fun uniScore(w: String): Int = (uni[w] ?: 0) * 8 + (Starter.uni(bn)[w] ?: 0)
+    private fun uniScore(w: String): Int = (uni[w] ?: 0) * 8 + (sUni()[w] ?: 0)
 
     private fun biScore(prev: String?, w: String): Int {
         if (prev == null) return 0
         val k = prev + "\t" + w
-        return (bi[k] ?: 0) * 8 + (Starter.bi(bn)[k] ?: 0)
+        return (bi[k] ?: 0) * 8 + (sBi()[k] ?: 0)
     }
 
     private fun score(prev: String?, w: String): Int = uniScore(w) + 3 * biScore(prev, w)
+
+    /** Score of a word in a context (used to merge English and Banglish suggestions). */
+    fun scoreOf(prev: String?, w: String): Int = score(prev, w)
 
     /** Keeps the best [n] (score high, then short, then alphabetical). */
     private class Top(private val n: Int) {
@@ -89,8 +95,8 @@ class WordModel(private val bn: Boolean) {
 
     /** Best [n] words (stored form) for this context. Call [Tok.show] to format them. */
     fun suggest(c: Tok.Ctx, n: Int = 3): List<String> {
-        val su = Starter.uni(bn)
-        val sb = Starter.bi(bn)
+        val su = sUni()
+        val sb = sBi()
         val prev = c.prev
         val top = Top(n)
         val p = c.key

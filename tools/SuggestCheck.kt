@@ -154,5 +154,45 @@ fun main() {
     val badBn = Starter.uni(true).keys.filter { Tok.norm(it, true) != it }
     eq("en starter all valid", badEn, emptyList<String>())
     eq("bn starter all valid", badBn, emptyList<String>())
+    // ---- Banglish store (no starter list) ----
+    val bl = WordModel(false, starter = false); bl.clear()
+    repeat(3) { bl.learn("ami", "bhalo") }
+    repeat(3) { bl.learn(null, "bhalobasi") }
+    val bc = ctx("bha")!!
+    eq("banglish prefix", bl.suggest(bc).toSet(), setOf("bhalo", "bhalobasi"))
+    eq("banglish no starter words", bl.suggest(ctx("th")!!), emptyList<String>())
+    eq("banglish pair", bl.suggest(ctx("ami ")!!).first(), "bhalo")
+    val once = WordModel(false, starter = false); once.clear(); once.learn(null, "typo")
+    eq("banglish one-off hidden", once.suggest(ctx("ty")!!), emptyList<String>())
+    eq("scoreOf learned > 0", bl.scoreOf("ami", "bhalo") > 0, true)
+
+    // ---- Domains: e-mail ----
+    eq("email empty", Domains.email(""), emptyList<String>())
+    eq("email name", Domains.email("rahim"), listOf("@gmail.com", "@yahoo.com", "@outlook.com"))
+    eq("email @", Domains.email("rahim@"), listOf("@gmail.com", "@yahoo.com", "@outlook.com"))
+    eq("email @h", Domains.email("rahim@h"), listOf("@hotmail.com"))
+    eq("email @i", Domains.email("rahim@i"), listOf("@icloud.com"))
+    eq("email @gm", Domains.email("rahim@gm"), listOf("@gmail.com"))
+    eq("email done", Domains.email("rahim@gmail.com"), emptyList<String>())
+    eq("email two @", Domains.email("a@b@"), emptyList<String>())
+    eq("email tail @gm", Domains.emailTail("rahim@gm"), 3)
+    eq("email tail none", Domains.emailTail("rahim"), 0)
+    // ---- Domains: web ----
+    eq("web empty", Domains.web(""), emptyList<String>())
+    eq("web name", Domains.web("google"), listOf(".org", ".net", ".co"))
+    eq("web www. alone", Domains.web("www."), emptyList<String>())
+    eq("web www.name", Domains.web("www.google"), listOf(".org", ".net", ".co"))
+    eq("web dot", Domains.web("google."), listOf(".com", ".org", ".net"))
+    eq("web dot tail", Domains.webTail("google."), 1)
+    eq("web .c", Domains.web("google.c"), listOf(".com", ".co", ".com.bd"))
+    eq("web .b", Domains.web("google.b"), listOf(".bd"))
+    eq("web .com", Domains.web("google.com"), listOf(".com.bd"))
+    eq("web .com tail", Domains.webTail("google.com"), 4)
+    eq("web .org done", Domains.web("google.org"), emptyList<String>())
+    eq("web label after dot", Domains.web("mail.google"), listOf(".org", ".net", ".co"))
+    eq("web label tail 0", Domains.webTail("mail.google"), 0)
+    eq("web path", Domains.web("google.com/search"), emptyList<String>())
+    eq("web scheme", Domains.web("https://google"), listOf(".org", ".net", ".co"))
+    eq("web phrase", Domains.web("bangla news"), emptyList<String>())
     println(if (fails == 0) "ALL PASSED" else "FAILS: $fails")
 }

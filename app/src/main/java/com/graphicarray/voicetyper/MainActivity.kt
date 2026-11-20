@@ -286,7 +286,7 @@ class MainActivity : Activity() {
         d.requestWindowFeature(Window.FEATURE_NO_TITLE)
         val box = card()
         box.addView(sectionLabel("Clear learned words"))
-        box.addView(text("This deletes the words and word pairs the keyboard learned from your typing, in Bangla and English. The built-in starter words stay.", 14f, B.TEXT))
+        box.addView(text("This deletes the words and word pairs the keyboard learned from your typing, in Bangla, English and Banglish. The built-in starter words stay.", 14f, B.TEXT))
         val btns = LinearLayout(this).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
         btns.addView(secondaryButton("Cancel").apply { setOnClickListener { d.dismiss() } })
         btns.addView(primaryButton("Clear").apply {

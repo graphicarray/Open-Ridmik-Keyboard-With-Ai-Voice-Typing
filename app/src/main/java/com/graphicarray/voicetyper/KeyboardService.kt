@@ -34,6 +34,7 @@ class KeyboardService : InputMethodService() {
     private enum class V { IDLE, REC, BUSY }
     private enum class Kind { LETTER, SPECIAL, MIC }
     private enum class Shift { OFF, ONCE, LOCK }
+    private enum class FieldMode { NORMAL, EMAIL, URL }
 
     private val main = Handler(Looper.getMainLooper())
     private val recorder = WavRecorder()
@@ -46,6 +47,8 @@ class KeyboardService : InputMethodService() {
     private var shift = Shift.OFF
     private var lastShiftTap = 0L
     private var passwordField = false
+    private var fieldMode = FieldMode.NORMAL   // e-mail field: @ and .com keys. Web address field: www./.com key
+    private var domKey: Key? = null            // the www. / .com key of a web address field (label changes)
 
     // Next-word suggestions (all on this device, see Suggest.kt)
     private lateinit var sugRow: LinearLayout
@@ -204,9 +207,16 @@ class KeyboardService : InputMethodService() {
                 v == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD)) ||
             (cls == InputType.TYPE_CLASS_NUMBER && v == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
         captureClip(true)
-        // Suggestions: only in plain text fields. Learning: also not when the editor asks for no personalised learning.
-        sugOn = prefs.suggest && !passwordField && !deviceLocked() && suggestionsAllowed(info)
-        learnOn = sugOn && info != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) == 0
+        fieldMode = when {
+            cls != InputType.TYPE_CLASS_TEXT || passwordField -> FieldMode.NORMAL
+            v == InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS || v == InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS -> FieldMode.EMAIL
+            v == InputType.TYPE_TEXT_VARIATION_URI -> FieldMode.URL
+            else -> FieldMode.NORMAL
+        }
+        // Suggestions: plain text fields, plus domain suggestions in e-mail / web address fields.
+        // Learning: plain text fields only, and not when the editor asks for no personalised learning.
+        sugOn = prefs.suggest && !passwordField && !deviceLocked() && (fieldMode != FieldMode.NORMAL || suggestionsAllowed(info))
+        learnOn = sugOn && fieldMode == FieldMode.NORMAL && info != null && (info.imeOptions and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) == 0
         selActive = info != null && info.initialSelStart != info.initialSelEnd
         sugWords = emptyList()
         typingMode = false
@@ -246,6 +256,7 @@ class KeyboardService : InputMethodService() {
         super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
         selActive = newSelStart != newSelEnd
         updateAutoCap()
+        refreshDomKey()
         if (sugOn) scheduleSuggest()
     }
 
@@ -388,13 +399,14 @@ class KeyboardService : InputMethodService() {
         return prefs.kbHeight
     }
     private fun rowH(): Int = dp(56) * heightPct() / 100
-    private fun sigNow(): String = "${prefs.numberRow}|${heightPct()}"
+    private fun sigNow(): String = "${prefs.numberRow}|${heightPct()}|$fieldMode"
 
     private fun render() {
         stopRepeat()
         rows.removeAllViews()
         letters.clear()
         shiftKey = null
+        domKey = null
         val lay = when (page) {
             1 -> if (bangla) Layouts.SYM1_BN else Layouts.SYM1_EN
             2 -> Layouts.SYM2
@@ -463,15 +475,37 @@ class KeyboardService : InputMethodService() {
         bottom.addView(symK.box, cellLp(1.5f))
 
         if (!symbols) {
-            // Language switching = swipe on the space key. This slot opens the emoji panel.
-            val emK = Key(Kind.SPECIAL, null, R.drawable.ic_emoji, 14f, 1f)
-            bind(emK) { main.post { toggleEmoji() } }
-            bottom.addView(emK.box, cellLp(1f))
+            // Language switching = swipe on the space key. This slot opens the emoji panel
+            // (the emoji icon is also in the top bar). E-mail field: "@". Web address field: "www." then ".com".
+            when (fieldMode) {
+                FieldMode.EMAIL -> {
+                    val atK = Key(Kind.SPECIAL, "@", 0, 19f, 1f)
+                    bind(atK, pv = true) { commitKey("@") }
+                    bottom.addView(atK.box, cellLp(1f))
+                }
+                FieldMode.URL -> {
+                    val wk = Key(Kind.SPECIAL, urlKeyText(), 0, 13f, 1f)
+                    domKey = wk
+                    bind(wk) { commitDomain(urlKeyText()) }
+                    bottom.addView(wk.box, cellLp(1f))
+                }
+                FieldMode.NORMAL -> {
+                    val emK = Key(Kind.SPECIAL, null, R.drawable.ic_emoji, 14f, 1f)
+                    bind(emK) { main.post { toggleEmoji() } }
+                    bottom.addView(emK.box, cellLp(1f))
+                }
+            }
         }
 
-        val comma = Key(Kind.SPECIAL, ",", 0, 19f, 1f)
-        bind(comma, pv = true) { commitKey(",") }
-        bottom.addView(comma.box, cellLp(1f))
+        if (fieldMode == FieldMode.EMAIL) {
+            val dc = Key(Kind.SPECIAL, ".com", 0, 13f, 1f)
+            bind(dc) { commitDomain(".com") }
+            bottom.addView(dc.box, cellLp(1f))
+        } else {
+            val comma = Key(Kind.SPECIAL, ",", 0, 19f, 1f)
+            bind(comma, pv = true) { commitKey(",") }
+            bottom.addView(comma.box, cellLp(1f))
+        }
 
         // Space: tap = space, swipe left/right = switch layout
         val sw = if (symbols) 5f else 4f
@@ -580,7 +614,7 @@ class KeyboardService : InputMethodService() {
         val ei = currentInputEditorInfo
         val textField = ei != null && (ei.inputType and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT
         val ic = currentInputConnection
-        val allowed = prefs.autoCap && !bangla && !symbols && !passwordField && textField && shift != Shift.LOCK
+        val allowed = prefs.autoCap && !bangla && !symbols && !passwordField && textField && fieldMode == FieldMode.NORMAL && shift != Shift.LOCK
         val need = allowed && ic != null && ic.getCursorCapsMode(TextUtils.CAP_MODE_SENTENCES) != 0
         if (need && shift == Shift.OFF) {
             shift = Shift.ONCE; autoShifted = true; applyShift()
@@ -613,6 +647,27 @@ class KeyboardService : InputMethodService() {
         if (ic.getSelectedText(0)?.isNotEmpty() == true) return
         val b = ic.getTextBeforeCursor(2, 0)?.toString() ?: return
         if (b.length == 2 && b[1] == ' ' && !b[0].isWhitespace() && b[0] !in ",.?!।") ic.deleteSurroundingText(1, 0)
+    }
+
+    /** Web address field: "www." while the field is empty, ".com" once there is text. */
+    private fun urlKeyText(): String {
+        val b = currentInputConnection?.getTextBeforeCursor(1, 0)
+        return if (b.isNullOrEmpty()) "www." else ".com"
+    }
+
+    private fun refreshDomKey() {
+        if (fieldMode != FieldMode.URL) return
+        val t = urlKeyText()
+        domKey?.tv?.let { if (it.text.toString() != t) it.text = t }
+    }
+
+    /** ".com", "www." ... "www.google." + ".com" must not give "www.google..com". */
+    private fun commitDomain(piece: String) {
+        val ic = currentInputConnection ?: return
+        var s = piece
+        if (s.startsWith(".") && ic.getTextBeforeCursor(1, 0)?.toString() == ".") s = s.substring(1)
+        ic.commitText(s, 1)
+        afterCommit(s)
     }
 
     private fun commitRaw(s: String) {
@@ -1065,11 +1120,14 @@ class KeyboardService : InputMethodService() {
         emojiTabScroll.visibility = if (emoji && !status) View.VISIBLE else View.GONE
     }
 
+    /** [words] come best first. The best match goes in the CENTRE cell, the next two left and right of it. */
     private fun showSug(words: List<String>) {
-        sugWords = words
+        sugWords = listOf(words.getOrNull(1) ?: "", words.getOrNull(0) ?: "", words.getOrNull(2) ?: "")
+        val size = if (fieldMode == FieldMode.NORMAL) 14f else 11f   // "@outlook.com" is long
         for (i in sugCells.indices) {
-            sugCells[i].text = words.getOrNull(i) ?: ""
-            sugCells[i].typeface = if (i == 0) B.FONT_B else B.FONT
+            sugCells[i].text = sugWords.getOrNull(i) ?: ""
+            sugCells[i].textSize = size
+            sugCells[i].typeface = if (i == 1) B.FONT_B else B.FONT
         }
     }
 
@@ -1089,6 +1147,12 @@ class KeyboardService : InputMethodService() {
         if (!sugOn || clipOpen || emojiOpen || !::sugRow.isInitialized) return
         val ic = currentInputConnection
         if (ic == null || selActive) { clearSug(); return }
+        if (fieldMode != FieldMode.NORMAL) {
+            val b = ic.getTextBeforeCursor(Tok.CTX_LEN, 0)?.toString() ?: ""
+            sugSeq++
+            showSug(if (fieldMode == FieldMode.EMAIL) Domains.email(b) else Domains.web(b))
+            return
+        }
         val before = ic.getTextBeforeCursor(Tok.CTX_LEN, 0)?.toString()
         val after = ic.getTextAfterCursor(1, 0)?.toString() ?: ""
         val c = if (before == null) null else Tok.context(before, after, bangla)
@@ -1103,6 +1167,17 @@ class KeyboardService : InputMethodService() {
     private fun pickSuggestion(w: String) {
         val ic = currentInputConnection ?: return
         val before = ic.getTextBeforeCursor(Tok.CTX_LEN, 0)?.toString() ?: ""
+        if (fieldMode != FieldMode.NORMAL) {
+            // "@gmail.com" replaces what was typed after "@"; ".org" replaces what was typed after the last dot. No space added.
+            val del = if (fieldMode == FieldMode.EMAIL) Domains.emailTail(before) else Domains.webTail(before)
+            ic.beginBatchEdit()
+            if (del > 0) ic.deleteSurroundingText(del, 0)
+            ic.commitText(w, 1)
+            ic.endBatchEdit()
+            clearSug()
+            scheduleSuggest()
+            return
+        }
         val partialLen = before.length - Tok.partialStart(before)
         ic.beginBatchEdit()
         if (partialLen > 0) ic.deleteSurroundingText(partialLen, 0)
